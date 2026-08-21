@@ -10,6 +10,9 @@ you agree it is licensed under the repository's MIT license.** There is no CLA.
 
 ## Getting started
 
+Requires **Node 22+** (the test suite uses Node's global `navigator`, present
+since Node 21; CI runs Node 22) and pnpm (version pinned via `packageManager`).
+
 ```bash
 pnpm install --frozen-lockfile   # install the reviewed dependency graph
 pnpm dev                         # vite dev server (frontend)
