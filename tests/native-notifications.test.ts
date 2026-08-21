@@ -5,7 +5,7 @@
 // that routing against a captured listener, because the bug this fixes was
 // precisely "the click happened and nothing could route it".
 
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
 const pluginSent: Array<Record<string, unknown>> = [];
@@ -63,6 +63,7 @@ async function freshModule() {
 }
 
 beforeEach(() => { nativeAnswer = true; });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('delivery picks the path the build actually has', () => {
   it('after the probe answers yes, banners go native with the routing payload', async () => {
@@ -100,7 +101,9 @@ describe('delivery picks the path the build actually has', () => {
     nativeAnswer = false;
     const n = await freshModule();
     // The queue exists only where the hazard does: pretend to be a Mac.
-    Object.defineProperty(navigator, 'userAgent', { value: 'Mozilla/5.0 (Macintosh)', configurable: true });
+    // Stub (never mutate an ambient global): the fixture belongs to this test,
+    // and Node only ships a global navigator on 21+ anyway.
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh)' });
     // No init: probe never warmed. The banner is queued, not dropped.
     n.checkSessionAlerts([{ cwd: '/a', label: 'a', wantsYou: false, line: null }], false, true);
     n.checkSessionAlerts([{ cwd: '/a', label: 'a', wantsYou: true, line: 'x' }], false, true);
@@ -233,7 +236,7 @@ describe('the Rust side holds up its half of the contract', () => {
     // message content on screen — a disclosure, not a misroute (codex P2).
     nativeAnswer = false;
     const n = await freshModule();
-    Object.defineProperty(navigator, 'userAgent', { value: 'Mozilla/5.0 (Macintosh)', configurable: true });
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh)' });
     n.setNotificationOwner('account-a');
     n.checkSessionAlerts([{ cwd: '/a', label: 'a', wantsYou: false, line: null }], false, true);
     n.checkSessionAlerts([{ cwd: '/a', label: 'a', wantsYou: true, line: 'x' }], false, true);
