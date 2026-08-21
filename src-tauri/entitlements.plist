@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened-runtime permission to send Apple Events (osascript → iTerm).
+	     Without this, a signed+notarized build cannot even PROMPT for
+	     Automation consent: every session verb dies with -1743 and System
+	     Settings has nothing to offer (codex P1, session-verbs review). -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

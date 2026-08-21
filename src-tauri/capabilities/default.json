@@ -1,0 +1,22 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for Vibe Buddy",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "notification:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://www.slashvibe.dev/*" },
+        { "url": "https://slashvibe.dev/*" },
+        { "url": "https://github.com/*" },
+        { "url": "https://*.githubusercontent.com/*" }
+      ]
+    },
+    "global-shortcut:default",
+    "updater:default",
+    "process:default"
+  ]
+}

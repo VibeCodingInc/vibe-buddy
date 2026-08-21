@@ -1,0 +1,14 @@
+# gitleaks config for the public vibe-buddy source.
+# Extends the default ruleset. ONE allowlisted value: the fabricated JWT used
+# as INPUT to the redaction test (payload is a bare handle, signature is fake -
+# it proves the redactor strips JWT-shaped strings). The allowlist matches the
+# exact fabricated value, never a file: a real credential added to any file,
+# including the test, is still caught.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "The exact fabricated redaction-test JWT (see SECRET-SCAN.md)"
+regexes = [
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiJjb2x0cmFuZSJ9\.abcdEFGH1234_\-signaturehere''',
+]

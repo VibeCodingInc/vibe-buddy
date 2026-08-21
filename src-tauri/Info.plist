@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Buddy brings your terminal tab to the front, and in iTerm can put a line you typed into that session's prompt without sending it — only when you click Open Session or Open with Draft on a session row.</string>
+</dict>
+</plist>

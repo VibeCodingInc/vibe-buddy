@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="660" height="400" viewBox="0 0 660 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0a"/>
+      <stop offset="50%" style="stop-color:#0d0d12"/>
+      <stop offset="100%" style="stop-color:#0a0a0a"/>
+    </linearGradient>
+
+    <!-- Glow effect for icon areas -->
+    <radialGradient id="iconGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#6B8FFF;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#6B8FFF;stop-opacity:0"/>
+    </radialGradient>
+
+    <!-- Arrow gradient -->
+    <linearGradient id="arrowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#6B8FFF;stop-opacity:0.3"/>
+      <stop offset="50%" style="stop-color:#6B8FFF"/>
+      <stop offset="100%" style="stop-color:#6B8FFF;stop-opacity:0.3"/>
+    </linearGradient>
+
+    <!-- Subtle grid pattern -->
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#6B8FFF" stroke-opacity="0.03" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="660" height="400" fill="url(#bgGrad)"/>
+
+  <!-- Subtle grid overlay -->
+  <rect width="660" height="400" fill="url(#grid)"/>
+
+  <!-- Decorative elements -->
+  <!-- Top left corner accent -->
+  <path d="M 0 0 L 80 0 L 0 80 Z" fill="#6B8FFF" opacity="0.03"/>
+
+  <!-- Bottom right corner accent -->
+  <path d="M 660 400 L 580 400 L 660 320 Z" fill="#6B8FFF" opacity="0.03"/>
+
+  <!-- Left icon glow area (for Vibe app icon) -->
+  <ellipse cx="165" cy="200" rx="100" ry="100" fill="url(#iconGlow)"/>
+
+  <!-- Right icon glow area (for Applications folder) -->
+  <ellipse cx="495" cy="200" rx="100" ry="100" fill="url(#iconGlow)"/>
+
+  <!-- Arrow indicator -->
+  <g transform="translate(330, 200)">
+    <!-- Arrow body -->
+    <line x1="-60" y1="0" x2="40" y2="0" stroke="url(#arrowGrad)" stroke-width="3" stroke-linecap="round"/>
+    <!-- Arrow head -->
+    <path d="M 30 -12 L 55 0 L 30 12" fill="none" stroke="#6B8FFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Title text -->
+  <text x="330" y="50" text-anchor="middle" fill="#ffffff" font-family="SF Mono, Monaco, monospace" font-size="28" font-weight="300" letter-spacing="-1">/vibe</text>
+
+  <!-- Subtitle -->
+  <text x="330" y="75" text-anchor="middle" fill="#6B8FFF" font-family="SF Mono, Monaco, monospace" font-size="12">Terminal for the social era</text>
+
+  <!-- Icon labels -->
+  <text x="165" y="320" text-anchor="middle" fill="#ffffff" font-family="SF Mono, Monaco, monospace" font-size="13" opacity="0.9">Vibe</text>
+  <text x="495" y="320" text-anchor="middle" fill="#ffffff" font-family="SF Mono, Monaco, monospace" font-size="13" opacity="0.9">Applications</text>
+
+  <!-- Drag instruction -->
+  <text x="330" y="360" text-anchor="middle" fill="#888888" font-family="SF Mono, Monaco, monospace" font-size="11">Drag to install</text>
+
+  <!-- Version badge -->
+  <g transform="translate(330, 380)">
+    <rect x="-25" y="-10" width="50" height="16" rx="8" fill="#6B8FFF" opacity="0.15"/>
+    <text x="0" y="2" text-anchor="middle" fill="#6B8FFF" font-family="SF Mono, Monaco, monospace" font-size="9">ALPHA</text>
+  </g>
+
+  <!-- Subtle particles (decorative) -->
+  <circle cx="50" cy="120" r="2" fill="#6B8FFF" opacity="0.3"/>
+  <circle cx="600" cy="80" r="1.5" fill="#6B8FFF" opacity="0.25"/>
+  <circle cx="580" cy="350" r="2" fill="#6B8FFF" opacity="0.2"/>
+  <circle cx="100" cy="300" r="1.5" fill="#6B8FFF" opacity="0.25"/>
+  <circle cx="200" cy="60" r="1" fill="#6B8FFF" opacity="0.3"/>
+  <circle cx="450" cy="40" r="1.5" fill="#6B8FFF" opacity="0.25"/>
+</svg>

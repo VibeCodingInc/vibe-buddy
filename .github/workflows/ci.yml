@@ -1,0 +1,74 @@
+name: CI
+
+# Public source gate: frontend tests + build against the COMMITTED lockfile,
+# the Rust test suite, and a real secret scan, on every push/PR. This
+# repository is the source, not the release channel — no job here has (or may
+# ever be given) access to signing keys, notarization credentials, or release
+# secrets. Signed releases are produced separately and published at
+# VibeCodingInc/vibe-buddy-releases.
+#
+# Actions are pinned by commit SHA (a tag is not an integrity pin), matching
+# the checksum rigor applied to the gitleaks binary below.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        # version comes from package.json "packageManager"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - name: Install (frozen lockfile — test the reviewed graph)
+        run: pnpm install --frozen-lockfile
+      - name: Unit tests
+        run: pnpm test
+      - name: TypeScript gate
+        run: npx tsc --noEmit
+      - name: Frontend production build
+        run: pnpm run build
+
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - name: Build frontend (tauri::generate_context! requires ../dist)
+        run: pnpm install --frozen-lockfile && pnpm run build
+      - name: Rust tests (locked)
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (pinned CLI)
+        # Direct pinned CLI with a hardcoded archive checksum — a versioned URL
+        # is not an integrity pin, and the checksum is never fetched alongside
+        # the executable.
+        run: |
+          set -euo pipefail
+          VER=8.30.1
+          SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "${SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks version
+          /tmp/gitleaks detect --source . --config .gitleaks.toml --redact --exit-code 1
