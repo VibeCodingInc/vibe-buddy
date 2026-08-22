@@ -1521,6 +1521,10 @@ async function resizeWindow(width: number, height: number) {
   try {
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
     const win = getCurrentWindow();
+    // macOS ignores setSize on a zoomed/maximized window, which stranded the
+    // compact rail in a full-size black void (Seth, live). Un-zoom first so the
+    // resize actually applies; otherwise the rail sits marooned.
+    try { if (await win.isMaximized()) await win.unmaximize(); } catch {}
     await win.setSize(new (await import('@tauri-apps/api/dpi')).LogicalSize(width, height));
   } catch (e) { console.warn('resizeWindow error:', e); }
 }
