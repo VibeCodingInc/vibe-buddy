@@ -298,13 +298,15 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     }
   }, [messages]);
 
-  const send = async (text?: string) => {
+  const send = async (text?: string, forceUnlinked?: boolean) => {
     const msg = text || input.trim();
     if (!msg || sending) return;
     // The parent the HUMAN explicitly chose to answer (never a silent
     // newest-message default). Captured before the async send so an arriving
-    // message can't shift the target mid-flight.
-    const replyTarget = replyingTo;
+    // message can't shift the target mid-flight. forceUnlinked (the "send
+    // without the link" recovery from invalid_reply_target) sends bare
+    // regardless of any currently-composed target.
+    const replyTarget = forceUnlinked ? null : replyingTo;
     const optimisticId = `local_${Date.now()}`;
     setSending(true);
     setInput('');
@@ -383,6 +385,28 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         setFailReasons((prev) => new Map(prev).set(failed.id, result.error!));
       }
     }
+  };
+
+  const dropFailed = (id: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+    setFailReasons((prev) => { const n = new Map(prev); n.delete(id); return n; });
+    setFailReplyTargets((prev) => { const n = new Map(prev); n.delete(id); return n; });
+  };
+
+  // The platform PERMANENTLY refused the chosen reply target
+  // (invalid_reply_target — the parent is gone/invalid). Retrying the same
+  // target is futile, so the failed bubble offers an explicit human choice
+  // instead of Retry: send the same text WITHOUT the link, or take the text
+  // back to the composer to pick a different parent. The link is never
+  // silently dropped — the human decides.
+  const sendUnlinked = async (failed: VibeMessage) => {
+    dropFailed(failed.id);
+    await send(failed.content, true); // force no link
+  };
+  const pickAnother = (failed: VibeMessage) => {
+    setInput(failed.content);
+    dropFailed(failed.id);
+    // The human now taps a message's "reply" and sends — a new, valid target.
   };
 
   return (
@@ -701,7 +725,34 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                     sent — double-check the handle, or retry
                   </div>
                 )}
-                {msg.status === 'failed' && (
+                {/* PERMANENT reply-target refusal: the chosen parent is
+                    gone/invalid, so a plain Retry (same target) is futile and
+                    is NOT offered. One explanation + an explicit human choice:
+                    send the same text without the link, or take it back to
+                    pick another parent. The link is never silently dropped. */}
+                {msg.status === 'failed' && failReasons.get(msg.id) === 'invalid_reply_target' && (
+                  <div style={{ marginTop: '1px' }}>
+                    <div style={{ color: color.faint, marginBottom: '2px' }}>
+                      that message can&rsquo;t be replied to — it may have been
+                      deleted. send without the link, or pick another to answer.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => sendUnlinked(msg)}
+                      style={{ background: 'transparent', border: 'none', color: '#6B8FFF', fontSize: '9px', fontFamily: 'inherit', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                    >
+                      send without the link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pickAnother(msg)}
+                      style={{ background: 'transparent', border: 'none', color: '#6B8FFF', fontSize: '9px', fontFamily: 'inherit', cursor: 'pointer', marginLeft: '10px', padding: 0, textDecoration: 'underline' }}
+                    >
+                      pick another
+                    </button>
+                  </div>
+                )}
+                {msg.status === 'failed' && failReasons.get(msg.id) !== 'invalid_reply_target' && (
                   <>
                     <span style={{ color: '#ff4444', marginLeft: '4px' }}>Failed</span>
                     <button

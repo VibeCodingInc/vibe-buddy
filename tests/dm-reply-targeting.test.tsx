@@ -123,3 +123,57 @@ describe('explicit reply targeting — the human chooses', () => {
     expect(src).toMatch(/setReplyingTo\(\{ id: msg\.id/);
   });
 });
+
+describe('invalid_reply_target — no futile Retry, explicit human choice (codex CR on #7)', () => {
+  it('a permanently-refused target offers send-unlinked + pick-another, NOT Retry', async () => {
+    mount([m('p1', THEM, 'a since-deleted message')]);
+    // Choose the parent, then the server permanently refuses it.
+    fireEvent.click(screen.getByRole('button', { name: /Reply to this message/ }));
+    ok = false;
+    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockImplementation(async (_t, content, replyTo) => {
+      sent.push({ content, replyTo });
+      return { ok: false, error: 'invalid_reply_target' };
+    });
+    fireEvent.change(composer(), { target: { value: 'my answer' } });
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    await screen.findByText(/can’t be replied to/);
+    // Futile Retry is NOT offered for this error.
+    expect(screen.queryByText('Retry')).toBeNull();
+    // The two explicit choices are.
+    expect(screen.getByText('send without the link')).toBeTruthy();
+    expect(screen.getByText('pick another')).toBeTruthy();
+  });
+
+  it('"send without the link" re-sends the same text with NO reply_to', async () => {
+    mount([m('p1', THEM, 'gone')]);
+    fireEvent.click(screen.getByRole('button', { name: /Reply to this message/ }));
+    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockImplementation(async (_t, content, replyTo) => {
+      sent.push({ content, replyTo });
+      return { ok: false, error: 'invalid_reply_target' };
+    });
+    fireEvent.change(composer(), { target: { value: 'answer text' } });
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    await screen.findByText('send without the link');
+    // Now the unlinked resend succeeds.
+    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockImplementation(async (_t, content, replyTo) => {
+      sent.push({ content, replyTo });
+      return { ok: true };
+    });
+    fireEvent.click(screen.getByText('send without the link'));
+    await waitFor(() => expect(sent.some((s) => s.content === 'answer text' && s.replyTo === undefined)).toBe(true));
+    // The link was tried once (with the bad target) then explicitly dropped —
+    // never silently: the first attempt carried the target, the recovery did not.
+    expect(sent[0]).toEqual({ content: 'answer text', replyTo: 'p1' });
+  });
+
+  it('"pick another" returns the text to the composer for a fresh target', async () => {
+    mount([m('p1', THEM, 'gone')]);
+    fireEvent.click(screen.getByRole('button', { name: /Reply to this message/ }));
+    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false, error: 'invalid_reply_target' });
+    fireEvent.change(composer(), { target: { value: 'redo me' } });
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    await screen.findByText('pick another');
+    fireEvent.click(screen.getByText('pick another'));
+    await waitFor(() => expect((composer() as HTMLTextAreaElement).value).toBe('redo me'));
+  });
+});
