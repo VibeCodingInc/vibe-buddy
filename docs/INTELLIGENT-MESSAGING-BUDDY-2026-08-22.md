@@ -560,30 +560,39 @@ fixture prototype yet.**
   (stale-runtime vs pinned-config drift; an MCP-CLI/update lane concern),
   reported apart from the Spark/Charge reading. No resend.
 
-### Live 3A — INCONCLUSIVE (envelope mismatch) · critique paused
+### Live 3A — reconciled: cross-session interleaving (not a mismatch)
 
-Both ends disagree on what was said:
-- sender reports **439 chars**; recipient reports **1,219 chars**; **subjects
-  differ**.
+**Correction (supersedes the earlier "envelope mismatch" reading below was
+based on):** there was **no 439→1,219 mutation and no transport corruption.**
+Two different @brightseth sessions sent two different questions into the *same
+named thread* — a 439-char sealed-envelope INTENT question and a newer
+1,219-char 0.8.18 question. Slashvibebot selected the **newer** one and
+drafted against it; it has now been directed to target the earlier 439-char
+message.
 
-**Classification: inconclusive, not failed.** Spark / Charge / reply are
-**not scored** until the exact sent body and the selected recipient message
-are reconciled. The draft may be fine — judging it now would paper over the
-deeper requirement.
+**Requirement, corrected:** not "exact bytes." The platform sanitizes
+content, so the right requirement is that **both ends agree on the same
+durable message record and its semantic body** — the record, not the raw
+bytes.
 
-**The finding (elevated):** *both ends must agree on the exact bytes and
-subject before any semantic quality can be judged.* Envelope agreement is the
-precondition for provenance itself — a "network fact / my read is…" claim is
-meaningless if the two ends are looking at different messages. This ranks
-above Spark/Charge in the requirement order.
+**The stale 0.8.16 runtime** reduced receipt evidence (no message ID /
+timestamp) but **did NOT cause the confusion** — it stays purely
+onboarding/update evidence.
 
-**Honest causal link (still logged as separate observations):** the stale
-**0.8.16** runtime meant no message ID + no server timestamp — which is
-exactly the mechanism that would let both ends *prove* they hold the same
-message. Without the rich receipt, the mismatch can't even be diagnosed at
-the wire. So: the runtime gap is onboarding/update evidence, AND it is why
-this envelope mismatch is currently unreconcilable. Both true; kept distinct.
+**The actual finding — cross-session interleaving:**
+- multiple sessions share the one @brightseth handle;
+- independent asks from those sessions land in one thread;
+- the recipient view exposes **no reply-target / message ID**;
+- so "answer the newest message" can reconnect a reply to the **wrong
+  originating task**.
 
-**Actions:** no scoring · no resend · no prototype · hold in reader posture
-until the sent body and selected recipient message are reconciled (which
-likely needs the 0.8.17 runtime + a real message ID to anchor).
+This is a real intelligent-messaging requirement and it is cross-surface:
+a reply must target a **specific durable message record**, and both the
+recipient's reader (Buddy/Terminal inbox) and the composer must make *which
+message am I answering* explicit — otherwise Charge/intent from ask A gets a
+reply shaped for ask B. It sits alongside provenance, not above Spark/Charge.
+
+**Status:** Pass 3A is **no longer globally inconclusive.** The semantic
+critique **resumes** when slashvibebot's reply to the **439-char INTENT
+message** is surfaced. The newer 1,219-char draft/message is **out of that
+specific score.** No resend, no prototype; reader posture holds.
