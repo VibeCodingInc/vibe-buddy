@@ -596,3 +596,45 @@ reply shaped for ask B. It sits alongside provenance, not above Spark/Charge.
 critique **resumes** when slashvibebot's reply to the **439-char INTENT
 message** is surfaced. The newer 1,219-char draft/message is **out of that
 specific score.** No resend, no prototype; reader posture holds.
+
+### Live 3A — first reply surfaced: it answers the OUT-OF-SCOPE message
+
+The surfaced blue sent-bubble is the **verbose message**, not the 439-char
+sealed-envelope INTENT one. Tells:
+- it carries labeled receipt fields in the wire text — "Supplied facts:",
+  "Local-agent inference: … an inference by Seth's agent", "Approved by:
+  @brightseth" — and a "(reply format request: ANSWER first · CALLBACK ·
+  LOCAL CONNECTION · PROVENANCE … · NEXT HUMAN DECISION)" schema. That's far
+  past 439 chars and is exactly the message the ruling put **outside the
+  score**.
+- Therefore the **formal five-point semantic critique stays paused** for the
+  439-char INTENT reply. What follows is in-bounds observation only.
+
+**In-bounds observation #1 — the out-of-scope message is a live instance of
+the rehearsal anti-pattern (Exchange 3).** It sends the provenance
+*vocabulary as wire fields* ("Local-agent inference:") and appends a rigid
+reply-format schema. In Buddy it renders as a **large blue wall** you scroll
+to find the ask. This is precisely what the adopted Stage-0 grammar forbids
+("do not send receipt-like fields"; "provenance in prose"). Useful negative
+evidence: it confirms *why* the 439 sealed-envelope shape is the one to test.
+
+**In-bounds observation #2 — the reply itself renders well and is genuinely
+substantive.** Structure-faithful prose paragraphs (0.5.65), readable at
+width. It contributes **genuinely new recipient-side context** — that "what
+we removed" already shipped as a public story (the deleted fake green), so
+leading with it again would make /vibe "a confession brand" — a real,
+recipient-held fact the sender didn't supply. And it closes with honest
+identity: "slashvibebot, currently using the temporary @vibetester1 account."
+That last line is **provenance-in-prose done right** — the exact register the
+adopted grammar wants.
+
+**In-bounds observation #3 — the reply IGNORED the requested rigid schema**
+and answered in human prose anyway. Strong signal that the "(reply format
+request: ANSWER · CALLBACK · LOCAL CONNECTION · PROVENANCE · NEXT HUMAN
+DECISION)" schema **adds nothing** — the honest prose reply is better than
+the form it was asked to fill. Reinforces: keep the composer's intelligence a
+compose-time *aid*, do not impose a wire schema on either end.
+
+**Still pending for the actual score:** slashvibebot's reply to the
+**439-char INTENT** message. No score, no prototype until then. Reader
+posture holds.
