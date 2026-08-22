@@ -194,6 +194,20 @@ export interface VibeMessage {
    * handle. Absent on older servers → no claim, no label.
    */
   kind?: 'announcement';
+  /**
+   * SERVER-BACKED reply association (the "needle"). The DEPLOYED thread-read
+   * contract returns, per reply, the quoted parent as `reply_to`:
+   *   · available parent → `{ id, from, text }` (text = sanitized body ≤200)
+   *   · unavailable/deleted parent → `{ id, from: null, text: null }`
+   * `undefined` here = the message is not a reply at all. Authoritative
+   * association, never inference. `from`/`text` are PRESERVED as null (never
+   * coerced to '') so the renderer can show the truthful "unavailable" state
+   * rather than an empty quote.
+   *
+   * Still not in the contract: a parent timestamp (so the needle shows no
+   * relative age).
+   */
+  replyTo?: { id: string; from: string | null; text: string | null };
 }
 
 export interface VibeThread {
@@ -1237,6 +1251,21 @@ class BuddyClient {
         // Served kind, validated at the client edge (platform#272 stores
         // it inside `payload`, with provenance): see announcementKind.
         kind: announcementKind(m.payload),
+        // Server-backed reply association. Only the OBJECT shape (the quoted
+        // parent from getThreadMessages) becomes a needle; the ask-resolver
+        // path returns reply_to as a bare id string, which is not a quoted
+        // parent and must not render a needle. Never inferred. Nulls are
+        // PRESERVED: an unavailable/deleted parent arrives as
+        // { id, from: null, text: null } and must render the truthful
+        // "unavailable" state, not an empty quote.
+        replyTo:
+          m.reply_to && typeof m.reply_to === 'object' && typeof m.reply_to.id === 'string'
+            ? {
+                id: m.reply_to.id,
+                from: typeof m.reply_to.from === 'string' ? m.reply_to.from : null,
+                text: typeof m.reply_to.text === 'string' ? m.reply_to.text : null,
+              }
+            : undefined,
       }));
       return { messages, error: false };
     } catch (e) {
