@@ -1,6 +1,6 @@
 {
   "productName": "Vibe Buddy",
-  "version": "0.5.65",
+  "version": "0.5.66",
   "identifier": "com.vibe.buddy",
   "build": {
     "beforeDevCommand": "pnpm dev",
