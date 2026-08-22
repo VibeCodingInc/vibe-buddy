@@ -1046,8 +1046,8 @@ class BuddyClient {
     }
   }
 
-  async sendMessage(to: string, content: string): Promise<boolean> {
-    return (await this.sendMessageResult(to, content)).ok;
+  async sendMessage(to: string, content: string, replyTo?: string): Promise<boolean> {
+    return (await this.sendMessageResult(to, content, replyTo)).ok;
   }
 
   /**
@@ -1058,7 +1058,7 @@ class BuddyClient {
    * server-side errors, so an ok here never claims the handle was
    * verified — it claims exactly one thing: this send was stored.
    */
-  async sendMessageResult(to: string, content: string): Promise<{ ok: boolean; error?: string }> {
+  async sendMessageResult(to: string, content: string, replyTo?: string): Promise<{ ok: boolean; error?: string }> {
     if (!this.handle) return { ok: false };
 
     try {
@@ -1070,6 +1070,12 @@ class BuddyClient {
           from: this.handle,
           to,
           body: content,
+          // Explicit reply targeting: the parent message id the HUMAN chose
+          // to answer. snake_case is the wire format the platform accepts.
+          // Omitted entirely for an ordinary (unlinked) send — never a
+          // silent default. The needle only appears once the server serves
+          // the resulting link back on the next read.
+          ...(replyTo ? { reply_to: replyTo } : {}),
         },
       });
 
