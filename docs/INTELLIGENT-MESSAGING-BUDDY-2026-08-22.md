@@ -294,6 +294,37 @@ before the first send). That's the win the laws optimize for.
 
 ---
 
+## Platform's Stage-0 answers (2026-08-22) — binding constraints on this direction
+
+Concept C is the selected direction (quiet composer intelligence first; the
+mentalist FOR YOU card parked). Platform's answers to the five questions
+above **narrow what may be rendered as truth**:
+
+1. **Intent is NOT a served field.** "ANSWER" / "DECISION" etc. are literal
+   sender-authored, human-approved message *text* — not a reserved field.
+2. **No structured context bundle.** Spark + Charge travel as **one ordinary
+   message**, inheriting today's message behavior and the **2,000-char
+   refusal** boundary. No per-message context schema.
+3. **"remote agent's inference: none" is NOT a network fact yet.** In
+   Stage-0 it is an informative **author assertion inside untrusted text**.
+   Buddy must **not** promote it (or any provenance label) into verified
+   chrome.
+
+Consequences for every mockup in this doc: the provenance labels and the
+intent tag are, for Stage-0, **plain text a human typed and approved** — they
+render exactly as message body renders (structure-faithful, untrusted),
+never as elevated/served UI. No schema-dependent UI. The mentalist FOR YOU
+card (moment 4 + "room where it's happening") stays **parked** until served
+matching + `ACTOR_AUTH_MODE` exist. This sprint is the **interaction
+direction, not shipped truth.**
+
+**Spark + Charge, defined for Stage-0:**
+- **Spark** = the immediately-readable top line: the ask + its one-word
+  intent (`DECISION: is legacy_status safe to drop?`).
+- **Charge** = the quiet context underneath, in the same message, that a
+  recipient's *different local context* can act on — plain text, honest,
+  brief.
+
 ## Cheapest Stage-0 experiment (no platform changes)
 
 **"Wizard of Oz intent tags, human-driven, existing transport only."**
@@ -367,3 +398,127 @@ Nothing above is built. Selection + Platform contract confirmation gate any
 implementation; the immediate next step on selection is behind-fixtures
 prototyping of the chosen composer moment, then real captures — the
 established cycle discipline.
+
+---
+
+## Pass 3A — authored rehearsal (Buddy design reader)
+
+**Method note:** run as an authored rehearsal, not a live send. Sending a
+real DM requires committing to a speaking identity, and M5's Buddy overlaps
+@vibetester1/SETHBOT — an outward, hard-to-reverse action this project has
+burned on before, so it needs Seth's explicit "send as <handle>" first.
+Both local contexts here are synthetic and labeled; this is design evidence,
+never demand. Watch-points 1–3 (Spark readable, Charge quiet, not
+too-long/form-like/provenance-heavy) are properties of the OUTBOUND message
+and need no reply to judge.
+
+Each message is literal Stage-0 text (one ordinary message, ≤2000 chars,
+provenance = plain typed words, no chrome).
+
+### Exchange 1 — clean baseline (Spark clear, Charge quiet) ✅
+```
+DECISION: is legacy_status safe to drop?
+context: my drop-legacy-status branch is ready; the only
+thing reading the column is the rollback test.
+```
+- **Buddy render:** two lines. Spark ("DECISION: …") reads instantly as the
+  first line; Charge is one faint-feeling sentence below. Structure-faithful
+  (0.5.65) keeps the line break.
+- **Terminal render:** identical text in the transcript; the recipient's
+  `vibe inbox` shows the Spark as the preview line.
+- **Verdict:** the target shape. One question, one supporting fact.
+
+### Exchange 2 — more Charge, still quiet ✅ (near the ceiling)
+```
+REVIEW: does the retry backoff look right before I merge?
+context: webhooks/retry.ts — I changed the dedupe key to
+normalize before hashing, so retried rows stop colliding.
+one open question: whether the 30s cap is too aggressive.
+```
+- **Buddy render:** Spark + a 3-line Charge. Still readable, but this is the
+  ceiling: a fourth Charge line would start to feel like a form.
+- **Flag:** Charge should stay ≤3 short lines. Past that, the recipient
+  scrolls a paragraph to find the ask — Spark stops being telegraphic.
+
+### Exchange 3 — the failure mode: too form-like / provenance-heavy ❌
+```
+DECISION: safe to drop legacy_status?
+— network fact: branch drop-legacy-status
+— supplied context: rollback test reads the column
+— your agent's inference: safe after fixture update
+— remote agent's inference: none
+— human decision: yours
+```
+- **Buddy render:** five labeled lines — reads as a **receipt, not a
+  message.** This is exactly what Platform's answer #3 forbids from becoming
+  chrome, and it's ugly even as text.
+- **Flag (load-bearing):** the provenance *vocabulary* is for OUR design
+  reasoning; it must NOT leak into the sent message. A human writing a DM
+  says "safe after the fixture update?" — they don't itemize
+  `your agent's inference:`. **Grammar refinement below.**
+
+### Exchange 4 — the playful beat, Stage-0-honest ✅🪄
+```
+FYI: you're closer to this than you think —
+your ingest branch touches the same retry path I'm about to
+merge. worth a look before one of us wastes a day?
+```
+- **Buddy render:** Spark = "FYI" (just-awareness intent), Charge = the
+  surprising-but-true connection in one human sentence. The grin survives
+  because it's phrased as a person noticing, not a system asserting.
+- **Verdict:** this is how the mentalist beat lives in Stage-0 — **as a
+  sentence a human chose to send**, not a served card. The card stays parked;
+  the *feeling* ships as ordinary text.
+
+### Grammar refinements (from the rehearsal)
+
+1. **Spark = intent word + the ask, one line.** `DECISION:` / `ANSWER:` /
+   `REVIEW:` / `FYI:` in caps, then the plain question. Immediately readable
+   as the inbox preview line.
+2. **Charge = at most ~3 short lines of plain context**, in the sender's
+   voice. No label prefixes. The AskUserQuestion composer's job is to help
+   the sender *choose* what one fact to include — the message that leaves is
+   ordinary prose.
+3. **The provenance labels are a COMPOSER-SIDE reasoning aid, never sent
+   text.** They belong in the (future) composer UI that helps you decide
+   what travels — not in the wire message. Exchange 3 is the anti-pattern.
+4. **The intent word is the only "structured" thing, and it's just a
+   convention** — cheap to test, honest (a human typed it), and it's what a
+   future served field would formalize once Platform can.
+5. **Playful stays in prose** (Exchange 4): the surprising connection is a
+   human sentence, so it can't over-claim.
+
+### Cross-surface critique (Terminal composer → Buddy reader)
+
+- Terminal's native AskUserQuestion is the right **composer** for Stage-0:
+  the sender picks intent (`what do you want back?`) and picks the one Charge
+  fact (`include the branch? the error? nothing?`) via bounded chips — then
+  Buddy (and Terminal inbox) just render the resulting ordinary message.
+- The asymmetry is correct: **rich bounded questions at compose time
+  (Terminal), quiet flat text at read time (Buddy).** Buddy stays a reader;
+  the intelligence is a compose-time aid, not a read-time overlay. This keeps
+  "no standing AI sidebar" and "Buddy renders platform truth" intact.
+- Danger to watch across 3–5 real exchanges: senders over-charging the
+  message (Exchange 2→3 drift). The composer must make "send less" the easy
+  default.
+
+### Smallest fixture-only composer prototype — recommended IF 3A holds
+
+If 3–4 live 3A exchanges confirm the Spark stays readable and the Charge
+stays quiet, the smallest next step is a **fixture-only DEV prototype of ONE
+composer moment: the intent chooser (moment 1)**:
+
+- Dev-harness only (`?compose=intent`), no shipped component change, no
+  schema. Renders the composer with the quiet inline question
+  (`what do you want back? [answer][decision][review][fyi]`); picking a chip
+  **prepends the literal intent word** to the drafted message. That's the
+  entire behavior — it writes plain text a human then sends.
+- It proves the interaction (does a bounded intent chip feel better than
+  typing `DECISION:`?) with zero platform dependency and nothing that could
+  be mislabeled as served truth.
+- Explicitly NOT in the prototype: Charge itemization UI, provenance chrome,
+  the FOR YOU card, any served field. Those wait on Platform.
+
+**Recommendation:** run 3–4 real 3A exchanges (Seth or a confirmed sending
+identity → slashvibebot) to confirm the shape, THEN build only the intent-
+chooser fixture prototype. Do not build ahead of the live evidence.
