@@ -2640,8 +2640,11 @@ describe('the send box never names a transport (Telegram test)', () => {
     // A reader must not need to know which bus a message rides to predict
     // what happens to it. Six mechanisms exist underneath; none may surface.
     const src = readFileSync(new URL('../src/components/DMPanel.tsx', import.meta.url), 'utf8');
+    // Anchored on the composer block's own opening condition — the thread
+    // HEADER now also reads reachability (buddy#53 served words), so the
+    // first bare occurrence of the enum is no longer this block.
     const compose = src.slice(
-      src.indexOf("them?.reachability === 'broadcast-only'"),
+      src.indexOf("(them?.reachability === 'broadcast-only' || (them ? hasNoReadEvidence(them) : false))"),
       src.indexOf('placeholder={`Message'),
     );
     expect(compose.length).toBeGreaterThan(200);

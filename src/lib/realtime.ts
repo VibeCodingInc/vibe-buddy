@@ -41,6 +41,11 @@ class RealtimeMessages {
   private readonly POLL_BG = 30000;
 
   init(handle: string) {
+    if (this.handle !== handle) {
+      // New identity, new evidence: senders seen for one account say
+      // nothing about another.
+      this.evidenceSenders.clear();
+    }
     this.handle = handle;
   }
 
@@ -126,6 +131,19 @@ class RealtimeMessages {
   private handleSSEEvent(event: RealtimeEvent) {
     switch (event.type) {
       case 'message': {
+        // PASSIVE stored-message evidence, fired regardless of mode and
+        // BEFORE any fetch: an archived conversation is filtered out of the
+        // inbox forever (message insertion does not clear archived), so an
+        // unarmed open panel needs this event — not the thread list — to
+        // learn the peer wrote (codex r7 P2 on buddy#53). Evidence only;
+        // the listener decides whether fetching is now justified.
+        {
+          const from = event.data?.from || event.data?.sender;
+          if (typeof from === 'string') {
+            if (this.evidenceSenders.size < 128) this.evidenceSenders.add(from.toLowerCase());
+            if (this.onMessageEvidence) this.onMessageEvidence(from);
+          }
+        }
         // A new message arrived — refresh the current view
         if (this.mode === 'dm' && this.dmTarget) {
           this.pollDM();
@@ -206,6 +224,41 @@ class RealtimeMessages {
       this.restartPolling();
     }
     this.pollInbox();
+  }
+
+  private onMessageEvidence: ((from: string) => void) | null = null;
+  // Stored-message evidence RETAINED beyond any panel's lifetime (codex r9
+  // P1 on buddy#53): App keeps the SSE stream up app-wide, so an archived
+  // conversation's incoming message lands here even while the list is
+  // showing — and a panel mounted LATER can still arm from it. Bounded;
+  // cleared on identity change. This is a fact log ("this sender's message
+  // event arrived this session"), never presence or read state.
+  private evidenceSenders = new Set<string>();
+
+  /** A stored-message SSE event from this sender arrived this session. */
+  hasMessageEvidenceFrom(handle: string): boolean {
+    return this.evidenceSenders.has(handle.toLowerCase());
+  }
+
+  /**
+   * An ACCEPTED send toward this peer is the same evidence class — a stored
+   * message exists in that thread — and it must outlive the panel that sent
+   * it (codex r15 P2): reopening before the next thread-list poll would
+   * otherwise claim the conversation is new despite the durable message.
+   * Session-scoped like the rest of this set; after a restart the thread
+   * list or cache carries the truth instead.
+   */
+  recordStoredMessageWith(handle: string) {
+    if (this.evidenceSenders.size < 128) this.evidenceSenders.add(handle.toLowerCase());
+  }
+
+  /**
+   * Register for passive stored-message evidence (SSE 'message' events,
+   * any mode). One listener; pass null to clear. Fires with the sender
+   * handle only — no fetch happens here.
+   */
+  setMessageEvidenceCallback(cb: ((from: string) => void) | null) {
+    this.onMessageEvidence = cb;
   }
 
   /**
