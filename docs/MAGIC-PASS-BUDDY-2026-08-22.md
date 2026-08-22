@@ -224,3 +224,30 @@ unit and the one that carries the magic.)
 
 > "The answer showed up already knowing which question it was for — I didn't
 > have to remember."
+
+---
+
+## Slice built: the reply needle (render-only) — PR VibeCodingInc/vibe-buddy#6
+
+Platform read shape obtained and implemented against exactly:
+`getThreadMessages` → per reply `reply_to: { id, from, text (sanitized ≤200) } | null`.
+
+Rendered: `↳ answering "<verbatim quote>" ›`, quote-not-classify, click/Enter
+→ move+highlight parent (no motion, no read-state change); no reply_to →
+ordinary message. Render-only: no write / schema / stitch / mentalist card /
+reordering. 6 mounted tests, 389 frontend + full gates green. Before = the
+real 3A misattribution; after = fixture-backed needle naming the correct
+question.
+
+**Two read-shape gaps returned to Platform (block the fuller needle, not this
+slice):**
+1. the `reply_to` object has **no parent timestamp** — no relative age until
+   `reply.created_at` is added.
+2. a deleted parent returns `reply_to: null`, **indistinguishable from a
+   non-reply** — the read never exposes the raw `reply_to_id`, so "replying to
+   an unavailable message" is un-renderable until that id (or a sentinel) is
+   exposed.
+
+Next slices (gated on review + those answers): Buddy's reply action WRITING
+reply_to at send (existing storage) → the human stitch → the mentalist card.
+Return path stays a labeled destination pending verified session origin.
