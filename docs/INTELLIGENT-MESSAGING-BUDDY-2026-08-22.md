@@ -559,3 +559,31 @@ fixture prototype yet.**
   **rich-receipt gate is NOT passed**. This is **onboarding/update evidence**
   (stale-runtime vs pinned-config drift; an MCP-CLI/update lane concern),
   reported apart from the Spark/Charge reading. No resend.
+
+### Live 3A — INCONCLUSIVE (envelope mismatch) · critique paused
+
+Both ends disagree on what was said:
+- sender reports **439 chars**; recipient reports **1,219 chars**; **subjects
+  differ**.
+
+**Classification: inconclusive, not failed.** Spark / Charge / reply are
+**not scored** until the exact sent body and the selected recipient message
+are reconciled. The draft may be fine — judging it now would paper over the
+deeper requirement.
+
+**The finding (elevated):** *both ends must agree on the exact bytes and
+subject before any semantic quality can be judged.* Envelope agreement is the
+precondition for provenance itself — a "network fact / my read is…" claim is
+meaningless if the two ends are looking at different messages. This ranks
+above Spark/Charge in the requirement order.
+
+**Honest causal link (still logged as separate observations):** the stale
+**0.8.16** runtime meant no message ID + no server timestamp — which is
+exactly the mechanism that would let both ends *prove* they hold the same
+message. Without the rich receipt, the mismatch can't even be diagnosed at
+the wire. So: the runtime gap is onboarding/update evidence, AND it is why
+this envelope mismatch is currently unreconcilable. Both true; kept distinct.
+
+**Actions:** no scoring · no resend · no prototype · hold in reader posture
+until the sent body and selected recipient message are reconciled (which
+likely needs the 0.8.17 runtime + a real message ID to anchor).
