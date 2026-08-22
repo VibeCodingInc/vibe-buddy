@@ -54,9 +54,9 @@ beforeEach(() => {
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
   vi.spyOn(realtime, 'goBackground').mockImplementation(() => {});
   vi.spyOn(realtime, 'setTypingCallback').mockImplementation(() => {});
-  vi.spyOn(buddyClient, 'sendMessage').mockImplementation(async (to, content) => {
+  vi.spyOn(buddyClient, 'sendMessageResult').mockImplementation(async (to, content) => {
     sent.push({ to, content });
-    return true;
+    return { ok: true };
   });
   vi.spyOn(buddyClient, 'sendTypingIndicator').mockImplementation(async () => {});
   memStore.clear();
@@ -192,7 +192,7 @@ describe('nothing else moved', () => {
     // Driven through the real send path (the cache deliberately refuses to
     // seed failed/optimistic messages): the wire refuses once, the bubble
     // must say the word and offer the action.
-    (buddyClient.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => false);
+    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ ok: false }));
     mount([]);
     const box = composer();
     fireEvent.change(box, { target: { value: 'did this land?' } });

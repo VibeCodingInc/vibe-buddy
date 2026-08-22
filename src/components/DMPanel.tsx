@@ -6,13 +6,101 @@ import { color, space, radius, size } from '../lib/tokens';
 import { vibeconfAvailability, startCall, joinLine, sessionContext } from '../lib/vibeconf';
 import { rememberCall } from '../lib/callMemory';
 import { isFreshLastSeen } from '../lib/freshness';
-import { hasNoReadEvidence } from './list/shared';
+import { hasNoReadEvidence, isTestAccount } from './list/shared';
 
 interface DMPanelProps {
   handle: string;
   chatWith: string;
   onBack: () => void;
   users: VibeUser[];
+  /**
+   * Open (or switch to) the thread with another principal — the first-message
+   * door (buddy#53): an @handle inside a message body is clickable and lands
+   * in the normal composer with NOTHING sent. Optional so the panel renders
+   * unchanged where the host provides no navigation.
+   */
+  onOpenThread?: (handle: string) => void;
+  /**
+   * The roster snapshot behind `users` has gone stale (App retains the last
+   * good snapshot through refresh failures, by design). Served words in the
+   * header must not outlive their evidence — the whole clause line
+   * suppresses rather than repeating 'away 2h' forever (codex r6 P2).
+   */
+  presenceStale?: boolean;
+  /**
+   * The SERVER's thread list says a thread with this principal exists.
+   * Opening a conversation must not create one (codex r1 P1 on #53): the
+   * platform's GET thread-messages calls getOrCreateThread, so polling a
+   * never-messaged principal would persist an empty thread into RECENT
+   * before any stored-message receipt. When this is false and no cache
+   * exists, the panel defers polling until the first accepted send.
+   * Boundary stated honestly: the served list is paginated, so a very old
+   * thread beyond the page loads its history only after the first send.
+   */
+  hasServerThread?: boolean;
+  /**
+   * The thread list has been read successfully at least once this session.
+   * When false, hasServerThread=false means "cannot know", not "none" —
+   * the empty state says so instead of inviting a first message over
+   * possibly-real history (codex r12 P1).
+   */
+  threadsCertain?: boolean;
+}
+
+// @handle tokens inside a message body, LINKING ONLY (buddy#53): this
+// presents the text's own characters as a navigation affordance and claims
+// nothing about the handle — existence is decided at send, where the server
+// refuses with `recipient_not_found` (and its lookup fails open, so nothing
+// is ever "verified"). A token counts only at a word boundary, so an email's
+// `@domain` half never becomes a link.
+// Trailing boundary too (codex r2 P2): a 40+-char run is an invalid token
+// and must stay TEXT — linking its first 39 chars would navigate to a
+// truncated, different handle. 39 = the platform/GitHub handle cap.
+const HANDLE_TOKEN = /@([A-Za-z0-9][A-Za-z0-9_-]{0,38})(?![A-Za-z0-9_-])/g;
+export function renderBodyWithHandles(
+  body: string,
+  onOpen?: (handle: string) => void,
+  // SERVED FORM FIRST (codex r13 P1): when the host can see a served
+  // identity carrying the raw (possibly hyphenated) form, the link targets
+  // it verbatim; aliasing to underscores applies only when no served
+  // identity claims the raw form.
+  servedKnows?: (raw: string) => boolean,
+): Array<string | { handle: string; text: string }> {
+  const parts: Array<string | { handle: string; text: string }> = [];
+  let last = 0;
+  for (const m of body.matchAll(HANDLE_TOKEN)) {
+    const at = m.index ?? 0;
+    const before = body.slice(last, at);
+    // Word boundary: the char before '@' must not be a word char — 'a@b' is
+    // an email-ish token, not a mention.
+    if (at > 0 && /[A-Za-z0-9_]/.test(body[at - 1])) continue;
+    parts.push(before);
+    // Canonical form mirrors the PLATFORM's own handle rule
+    // (getHandleRecord maps hyphens to underscores): '@foo-bar' must reach
+    // the real foo_bar, not a parallel thread it can never read
+    // (codex r1 P1 on #53). Display keeps the text's own characters.
+    // Synthetic-QA principals are deliberately removed from this board
+    // (shared.tsx isTestAccount); a mention of one stays TEXT (codex r9
+    // P2) — linking it would open a conversation the list then hides.
+    // Both forms: the prefix list carries 'synth-' (hyphenated), which the
+    // canonical underscore form would slip past.
+    const raw = m[1].toLowerCase();
+    const canonical = servedKnows?.(raw) ? raw : raw.replace(/-/g, '_');
+    // The platform handle grammar (validateHandle: 3–20 chars, not
+    // numeric-only, no leading underscore) — an unregisterable token stays
+    // TEXT instead of minting a composer that ends in recipient_not_found
+    // (codex r12 P2). Synthetic-QA principals likewise.
+    const impossible =
+      canonical.length < 3 || canonical.length > 20 ||
+      /^[0-9]+$/.test(canonical) || canonical.startsWith('_');
+    if (impossible || isTestAccount(raw) || isTestAccount(canonical)) {
+      parts.push(m[0]); last = at + m[0].length; continue;
+    }
+    parts.push({ handle: canonical, text: m[0] });
+    last = at + m[0].length;
+  }
+  parts.push(body.slice(last));
+  return onOpen ? parts.filter((p) => p !== '') : [body];
 }
 
 // A thread can span months, so a bare time ("1:56 PM") can't tell today's
@@ -35,7 +123,7 @@ function formatMessageTime(ts: string | number | Date): string {
   return `${d.toLocaleDateString([], dateOpts)}, ${time}`;
 }
 
-export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProps) {
+export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread, hasServerThread = true, presenceStale = false, threadsCertain = true }: DMPanelProps) {
   // Invite this person into a call.
   //
   // The agent half is the point, and it does NOT need summon infrastructure:
@@ -80,6 +168,8 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
       rememberCall({ url: info.url, code: info.code, from: chatWith });
       const sent = await buddyClient.sendMessage(chatWith, body);
       if (!sent) throw new Error('the invite could not be sent');
+      realtime.recordStoredMessageWith(chatWith);
+      setPollArmed(true);
       setInviteState('invite sent');
       setTimeout(() => setInviteState(null), 6000);
     } catch (e) {
@@ -90,6 +180,10 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
     }
   };
   const [messages, setMessages] = useState<VibeMessage[]>([]);
+  // WHY a local send was refused, by message id — so recipient_not_found can
+  // render as its honest reason instead of a generic Failed (buddy#53). Local
+  // presentation state only; nothing here creates or implies a thread.
+  const [failReasons, setFailReasons] = useState<Map<string, string>>(new Map());
   const [input, setInput] = useState('');
   // Drives the shortcut hint only — shown while composing, silent otherwise,
   // so the discoverability line is not standing chrome.
@@ -103,11 +197,50 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
   const them = users.find(u => u.handle === chatWith) || null;
   const me = users.find(u => u.handle === handle) || null;
 
+  // THE RECEIPT BOUNDARY (codex r1 P1 on #53): the platform's thread-messages
+  // GET calls getOrCreateThread, so polling a never-messaged principal would
+  // CREATE a durable empty thread — RECENT must gain a row only from a
+  // stored-message receipt. Polling arms only when the server already lists
+  // this thread, a local cache proves prior history, or a send in this panel
+  // was accepted.
+  const [pollArmed, setPollArmed] = useState<boolean>(
+    () =>
+      hasServerThread ||
+      getCachedMessages(handle, chatWith).length > 0 ||
+      // Retained SSE evidence (codex r9 P1): the peer's message event
+      // arrived while no panel was mounted — an archived thread's only
+      // trace, since archiving survives new messages and the inbox filters
+      // it forever.
+      realtime.hasMessageEvidenceFrom(chatWith),
+  );
+  // Server truth can arrive AFTER mount: the recipient sends first, App's
+  // thread poll flips hasServerThread, and this open conversation must join
+  // the wire instead of sitting empty until a send or remount (codex r2 P1).
+  useEffect(() => {
+    if (hasServerThread) setPollArmed(true);
+  }, [hasServerThread]);
+
   useEffect(() => {
     // Load cached messages immediately
     const cached = getCachedMessages(handle, chatWith);
     if (cached.length > 0) {
       setMessages(cached);
+    }
+    if (!pollArmed) {
+      // Composer-first: nothing fetched, nothing created. But stay AWAKE:
+      // an archived conversation never reappears in the inbox (archiving
+      // survives new messages), so the peer writing is only visible as a
+      // passive SSE message event. That event is stored-message evidence —
+      // exactly the receipt boundary's bar — so it arms polling
+      // (codex r7 P2). The SSE connection itself fetches no thread and
+      // creates nothing.
+      realtime.init(handle);
+      realtime.setMessageEvidenceCallback((from) => {
+        if (from === chatWith) setPollArmed(true);
+      });
+      return () => {
+        realtime.setMessageEvidenceCallback(null);
+      };
     }
 
     const handleIncoming = (thread: VibeMessage[]) => {
@@ -147,7 +280,8 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
       realtime.setTypingCallback(null);
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     };
-  }, [handle, chatWith]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handle, chatWith, pollArmed]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -171,11 +305,21 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
     };
     setMessages((prev) => [...prev, optimistic]);
 
-    const ok = await buddyClient.sendMessage(chatWith, msg);
-    if (!ok) {
+    const result = await buddyClient.sendMessageResult(chatWith, msg);
+    if (result.ok) {
+      // A stored-message receipt is exactly the evidence the receipt
+      // boundary waits for — the server thread now exists; polling may join,
+      // and the receipt outlives this panel (codex r15 P2).
+      realtime.recordStoredMessageWith(chatWith);
+      setPollArmed(true);
+    }
+    if (!result.ok) {
       setMessages((prev) =>
         prev.map((m) => (m.id === optimistic.id ? { ...m, status: 'failed' } : m))
       );
+      if (result.error) {
+        setFailReasons((prev) => new Map(prev).set(optimistic.id, result.error!));
+      }
     }
     setSending(false);
   };
@@ -188,11 +332,24 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
     setMessages((prev) =>
       prev.map((m) => (m.id === failed.id ? { ...m, status: 'pending' } : m))
     );
-    const ok = await buddyClient.sendMessage(chatWith, failed.content);
-    if (!ok) {
+    setFailReasons((prev) => {
+      if (!prev.has(failed.id)) return prev;
+      const next = new Map(prev);
+      next.delete(failed.id);
+      return next;
+    });
+    const result = await buddyClient.sendMessageResult(chatWith, failed.content);
+    if (result.ok) {
+      realtime.recordStoredMessageWith(chatWith);
+      setPollArmed(true);
+    }
+    if (!result.ok) {
       setMessages((prev) =>
         prev.map((m) => (m.id === failed.id ? { ...m, status: 'failed' } : m))
       );
+      if (result.error) {
+        setFailReasons((prev) => new Map(prev).set(failed.id, result.error!));
+      }
     }
   };
 
@@ -230,17 +387,46 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
             &larr;
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
-            <img
-              src={`https://github.com/${chatWith}.png?size=48`}
-              alt={chatWith}
-              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                flexShrink: 0,
-              }}
-            />
+            {/* IDENTITY-NEUTRAL until something served backs the identity
+                (codex r2 P2): an unverified composer target is just a typed
+                string, and painting a same-named GitHub account's face on it
+                asserts an identity /vibe never served. A SERVED roster row
+                is the bar — an accepted send is only a storage receipt (the
+                recipient lookup fails open), and a thread's existence
+                proves the same (codex r6 P2). */}
+            {them ? (
+              <img
+                src={`https://github.com/${chatWith}.png?size=48`}
+                alt={chatWith}
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <div
+                aria-hidden
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background: '#151515',
+                  border: `1px solid ${color.line}`,
+                  color: color.faint,
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {chatWith[0]?.toUpperCase()}
+              </div>
+            )}
             <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               {/* CUT 2026-08-15: the inferred state emoji. getDMContext calls
@@ -259,6 +445,35 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
                 }} />
               )}
             </div>
+            {/* SERVED words, each clause on its own evidence, never inferred
+                from each other (buddy#53 critique): "away Nh" is presence
+                freshness; the reading words are the platform's reachability
+                annotation (stale-unread evidence). Vocabulary is fixed by
+                the critique — 'reading messages' at MOST, never 'will
+                reply'; unknown renders as 'reading unknown' for agents;
+                humans carry no annotation and get silence. Nothing here
+                promises a response. */}
+            {!presenceStale && (() => {
+              const clauses: string[] = [];
+              if (them?.status === 'away' && them.ago) clauses.push(`away ${them.ago}`);
+              // 'not reading' — the board's shipped chip word for this
+              // exact state, so board and thread say the same thing about
+              // the same being. The full sentence ('hasn't been reading
+              // messages here. yours will queue…') stays at the composer
+              // moment, stated ONCE (mounted-honesty pin).
+              if (them?.reachability === 'broadcast-only') clauses.push('not reading');
+              else if (them?.isAgent && them?.reachability === 'unknown') clauses.push('reading unknown');
+              // 'listening' renders NOTHING (codex r1 P1): the platform
+              // flips that enum on fresh unread mail alone — mail ARRIVING
+              // is not evidence of anyone READING. The critique's 'at most
+              // "reading messages"' permits less; silence is the honest
+              // amount.
+              return clauses.length > 0 ? (
+                <div style={{ marginTop: '2px', fontSize: size[11], color: color.faint }}>
+                  {clauses.join(' · ')}
+                </div>
+              ) : null;
+            })()}
             {/* CUT 2026-08-15: the inferred "looks like…" status line. */}
             {canInvite && (
               <button
@@ -323,7 +538,16 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
 
         {messages.length === 0 && (
           <div style={{ textAlign: 'center', color: '#333', padding: '30px', fontSize: '12px' }}>
-            Start a conversation with @{chatWith}
+            {/* Neutral copy, never "Start a conversation" — that claims none
+                exists, which even a successful read cannot prove: the inbox
+                returns only its first 50 threads and excludes archived ones,
+                so absence here is not absence of history (codex review on
+                #54). A failed read says even less. */}
+            {pollArmed
+              ? 'No messages yet'
+              : threadsCertain
+                ? `Write a message to @${chatWith}`
+                : `can't check for history right now — a sent message will land in the same thread either way`}
           </div>
         )}
 
@@ -337,6 +561,16 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
                 maxWidth: '85%',
               }}
             >
+              {/* SERVED kind only (platform#272; coordinator ruling): the
+                  label renders when the platform marked the message — never
+                  inferred from body text or the sender handle, and never
+                  'via @coltrane' unless the platform can truthfully
+                  establish authorship. Dark until the seam deploys. */}
+              {msg.kind === 'announcement' && (
+                <div style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
+                  automated announcement · from /vibe
+                </div>
+              )}
               <div
                 style={{
                   background: isMe ? '#6B8FFF' : '#151515',
@@ -352,15 +586,44 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
                   // whitespace collapsed every \n to a space (an agent's
                   // findings arrived as one run-on paragraph; Buddy's own
                   // call invite mangled itself). `pre-wrap` renders the body
-                  // byte-faithfully; it stays INERT plain text — React text
-                  // node, no Markdown, no HTML, nothing executable.
+                  // structure-faithfully; it stays INERT plain text — React
+                  // text node, no Markdown, no HTML, nothing executable.
                   whiteSpace: 'pre-wrap',
                   // A long unbroken token (a URL, a hash) must wrap inside
                   // the bubble instead of forcing the thread sideways.
                   overflowWrap: 'anywhere',
+                  // A bulletin is posted, not said: squared corners + a
+                  // hairline, only when the kind is SERVED.
+                  ...(msg.kind === 'announcement'
+                    ? { background: '#101216', border: `1px solid ${color.line}`, borderRadius: '6px' }
+                    : {}),
                 }}
               >
-                {msg.content}
+                {renderBodyWithHandles(msg.content, onOpenThread, (raw) =>
+                  // The current PEER, a roster row, or a sender already in
+                  // THIS served thread — the sightings this panel holds
+                  // (codex r14/r15 P2; the full resolution is the platform
+                  // identity read on #272). An all-outbound thread's own
+                  // peer must keep their form.
+                  raw === chatWith.toLowerCase() ||
+                  users.some((u) => u.handle.toLowerCase() === raw) ||
+                  messages.some((m2) => m2.from.toLowerCase() === raw),
+                ).map((part, i) =>
+                  typeof part === 'string' ? (
+                    part
+                  ) : (
+                    <span
+                      key={i}
+                      role="link"
+                      tabIndex={0}
+                      onClick={() => onOpenThread?.(part.handle)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') onOpenThread?.(part.handle); }}
+                      style={{ textDecoration: 'underline', cursor: 'pointer' }}
+                    >
+                      {part.text}
+                    </span>
+                  ),
+                )}
               </div>
               <div
                 style={{
@@ -371,6 +634,18 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
                 }}
               >
                 {formatMessageTime(msg.timestamp)}
+                {msg.status === 'failed' && failReasons.get(msg.id) === 'recipient_not_found' && (
+                  // The server's refusal, stated as HISTORY. It outranks a
+                  // roster row (codex r9 P2): the snapshot may be RETAINED
+                  // and older than the refusal, so only an accepted retry —
+                  // newer send-path truth — clears this line (retry() does).
+                  // No phantom thread exists; the lookup fails open, so
+                  // nothing claims existence either way.
+                  <div style={{ color: color.faint, marginBottom: '1px' }}>
+                    the server couldn&rsquo;t find @{chatWith} when this was
+                    sent — double-check the handle, or retry
+                  </div>
+                )}
                 {msg.status === 'failed' && (
                   <>
                     <span style={{ color: '#ff4444', marginLeft: '4px' }}>Failed</span>
@@ -463,9 +738,13 @@ export default function DMPanel({ handle, chatWith, onBack, users }: DMPanelProp
             rows={Math.min(4, input.split('\n').length)}
             onChange={(e) => {
               setInput(e.target.value);
-              // Send typing indicator (debounced — max once every 3s)
+              // Send typing indicator (debounced — max once every 3s).
+              // NEVER before thread evidence exists (codex r10 P2): the
+              // composer-first state promises "nothing sent", and /api/typing
+              // dispatches an SSE event to the target — drafting must not
+              // notify someone you have not yet messaged.
               const now = Date.now();
-              if (now - lastTypingSentRef.current > 3000) {
+              if (pollArmed && now - lastTypingSentRef.current > 3000) {
                 lastTypingSentRef.current = now;
                 buddyClient.sendTypingIndicator(chatWith);
               }

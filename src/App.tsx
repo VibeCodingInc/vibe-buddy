@@ -244,6 +244,17 @@ export default function App() {
   // current, indefinitely. Track when we last learned anything true, and say so
   // when that stops being recent.
   const [lastSyncAt, setLastSyncAt] = useState<number>(() => Date.now());
+  // Presence-only freshness (codex r7 P2): lastSyncAt requires ALL THREE
+  // reads to land, so a my-sessions or thread outage would mark a freshly
+  // refreshed roster stale and hide current served words. The DM header's
+  // staleness keys on the presence read alone.
+  const [presenceLandedAt, setPresenceLandedAt] = useState<number>(() => Date.now());
+  // Has the thread list EVER been read successfully this session? A failed
+  // read retains the last-good rows, but before the first success there is
+  // nothing retained — and [] with no marker reads as "no threads", which
+  // let a fresh-mount DM confidently claim "Start a conversation" over real
+  // server history (codex r12 P1). Absence of certainty is not absence.
+  const [threadsCertain, setThreadsCertain] = useState(false);
   const [clockTick, setClockTick] = useState<number>(() => Date.now());
   const [threads, setThreads] = useState<VibeThread[]>([]);
   // Mirrors `threads` for reads inside the poll closure. On a failed fetch the
@@ -400,6 +411,7 @@ export default function App() {
   const clearIdentityState = useCallback(() => {
     resetArrivals();
     setUsers([]);
+    setThreadsCertain(false);
     setRecentlyHere([]);
     setSessions([]);
     setMySessions([]);
@@ -561,6 +573,7 @@ export default function App() {
         setUsers(presenceData.users);
         setSessions(presenceData.sessions);
         setRecentlyHere(presenceData.recentlyHere || []);
+        setPresenceLandedAt(Date.now());
       }
       setPresenceError(!!presenceData.error);
       // Same rule as the roster above, which threads did not follow: only
@@ -568,9 +581,14 @@ export default function App() {
       // a network blip emptied the Recent list and zeroed the tray unread count
       // — the user watched their conversations vanish and had no reason to
       // think it was the network.
+      // Rows are retained through failures; CERTAINTY is not (codex r14
+      // P2): a peer's thread created while SSE was down is absent from the
+      // retained rows, and claiming 'Start a conversation' on top of that
+      // would be a state nobody verified. Certainty tracks the LATEST read.
       if (!threadResult.error) {
         setThreads(threadResult.threads);
       }
+      setThreadsCertain(!threadResult.error);
       // Only a clean read counts. A half-good cycle still means some of what is
       // on screen is stale, and the point of this signal is to stop presenting
       // stale data as current.
@@ -1279,10 +1297,30 @@ export default function App() {
         )}
         {view.type === 'dm' && (
           <DMPanel
+            // KEYED BY RECIPIENT (codex r1 P1 on the first-message door):
+            // following an in-message @handle changes only chatWith, and a
+            // reused mount would carry the PREVIOUS thread's messages, draft,
+            // Retry and failure reasons under the new header — a draft written
+            // to one person must never be sendable to another. The remount is
+            // the state reset.
+            key={view.chatWith}
             handle={handle}
             chatWith={view.chatWith}
             onBack={() => setView({ type: 'list' })}
             users={users}
+            onOpenThread={(h) => setView({ type: 'dm', chatWith: h })}
+            presenceStale={clockTick - presenceLandedAt > STALE_AFTER_MS}
+            // KNOWN BOUNDARY (codex r4 P2, held on the platform seam): the
+            // inbox omits ARCHIVED threads by design, so an archived
+            // conversation with no local cache reads as thread-less here and
+            // will not poll — its durable history stays unrendered until a
+            // send, or until new activity un-archives it server-side and
+            // this prop flips (the panel arms on that transition). The real
+            // fix is a side-effect-free thread-existence read, requested on
+            // the platform#272 review — today's GET CREATES a thread, which
+            // is the worse failure this gate exists to prevent.
+            hasServerThread={threads.some((t) => t.with === view.chatWith)}
+            threadsCertain={threadsCertain}
           />
         )}
         {view.type === 'session' && (

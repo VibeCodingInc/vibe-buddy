@@ -635,6 +635,91 @@ export default function UnifiedBuddyList({
   const promotedHandles = new Set(promotedAgents.map((u) => u.handle));
   const laneAgents = agentUsers.filter((u) => !promotedHandles.has(u.handle));
 
+  // THE FIRST-MESSAGE FALLBACK, defined once for every branch (codex r3 P2:
+  // it lived only in the populated branch, so a fresh account in the quiet
+  // room — the user who most needs a first conversation — typed an exact
+  // handle into search and got nothing). Renders when the query is
+  // handle-shaped; opens the normal composer with nothing sent; existence is
+  // decided at send (recipient_not_found), never claimed here.
+  // The PLATFORM's handle grammar (validateHandle: 3–20 chars, lowercase
+  // letters/digits/underscore, no leading underscore, not numeric-only),
+  // applied BEFORE the door renders (codex r10 P2): a one-letter prefix
+  // search toward a visible @bob must never mint an @b composer and steal
+  // Enter from the real match. Hyphens accepted as input (GitHub habit) and
+  // canonicalized to underscores, mirroring getHandleRecord.
+  const composeCandidate = (() => {
+    if (!q || !/^@?[a-z0-9][a-z0-9_-]{0,38}$/i.test(query.trim())) return null;
+    const raw = query.trim().replace(/^@/, '').toLowerCase();
+    // SERVED FORM FIRST (codex r13 P1): hyphenated principals exist on the
+    // platform (resident vibe-bot) even though NEW registrations refuse
+    // hyphens — so aliasing raw→underscore is only correct when no served
+    // identity carries the raw form. The roster and thread list are the
+    // served identities this client can see.
+    // Every server-served sighting this client holds: roster, thread list,
+    // recent traces. The residual ambiguity (a served hyphenated identity
+    // with NO current sighting) is only resolvable by a platform identity
+    // read — requested on the platform#272 review; until then an unsighted
+    // raw form aliases to the registrable grammar (codex r14 P2, recorded).
+    const servedRaw =
+      users.some((u) => u.handle.toLowerCase() === raw) ||
+      threads.some((t) => t.with.toLowerCase() === raw) ||
+      recentlyHere.some((t) => t.handle.toLowerCase() === raw);
+    const c = servedRaw ? raw : raw.replace(/-/g, '_');
+    if (c.length < 3 || c.length > 20) return null;
+    if (!/^[a-z0-9_-]+$/.test(c) || c.startsWith('_') || /^[0-9]+$/.test(c)) return null;
+    return c;
+  })();
+  // Synthetic-QA principals are deliberately filtered off this board
+  // (isTestAccount); the compose door must not reopen them — a successful
+  // send would land in a conversation the list then hides (codex r9 P2).
+  const composeRaw = q ? query.trim().replace(/^@/, '').toLowerCase() : null;
+  const composeQuery = composeCandidate && !isTestAccount(composeCandidate) && !(composeRaw && isTestAccount(composeRaw))
+    ? composeCandidate : null;
+  // EXACT beats fuzzy, and RENDERED beats known (codex r4 P2, r5 P2):
+  // typing 'bob' toward a new @bob while @bobby exists hid the only compose
+  // action; and searching a KNOWN principal by alias form ('@alice',
+  // 'alice-smith' for alice_smith) filtered out every row while the
+  // known-set check suppressed the door — a total dead end. So the door
+  // hides only when the canonical target's own row is ACTUALLY ON SCREEN
+  // (that row is the affordance); in every other handle-shaped case it
+  // shows, and clicking it opens the same thread the row would have.
+  const presentedHandles = new Set([
+    ...filteredWaiting.map((t) => t.with.toLowerCase()),
+    ...humanActive.map((u) => u.handle.toLowerCase()),
+    ...humanAway.map((u) => u.handle.toLowerCase()),
+    ...promotedAgents.map((u) => u.handle.toLowerCase()),
+    ...laneAgents.map((u) => u.handle.toLowerCase()),
+    ...filteredOffline.map((t) => t.with.toLowerCase()),
+    // NOT orphan sessions (codex r6 P2): a session-only row routes to the
+    // SESSION view, not the composer — it cannot stand in for the DM door.
+  ]);
+  // Both forms suppress (codex r13 P1): a rendered hyphenated row must not
+  // coexist with a canonicalized door that steals Enter toward a different
+  // underscore principal.
+  const composeTargetPresented = composeQuery !== null &&
+    (presentedHandles.has(composeQuery) || presentedHandles.has(composeQuery.replace(/_/g, '-')));
+  const firstMessageFallback = composeQuery && !composeTargetPresented ? (
+    <div style={{ textAlign: 'center', paddingBottom: '16px' }}>
+      <button
+        type="button"
+        onClick={() => onUserClick(composeQuery)}
+        style={{
+          background: 'transparent',
+          border: `1px solid ${color.line}`,
+          borderRadius: '6px',
+          padding: '6px 14px',
+          color: color.blue,
+          fontSize: '12px',
+          fontFamily: 'inherit',
+          fontWeight: 600,
+          cursor: 'pointer',
+        }}
+      >
+        Message @{composeQuery} ›
+      </button>
+    </div>
+  ) : null;
+
   // Enter opens the TOPMOST VISIBLE result — so this list is the render
   // order, lane for lane. It used to read only the hero, Online and Agents,
   // which meant a query whose only match sat in Waiting, Away or Recent
@@ -650,6 +735,10 @@ export default function UnifiedBuddyList({
   // (codex P2). Getting the order wrong opens a lower row than the one the
   // reader is looking at, which has now been the same bug three times.
   const enterTarget: { handle: string; session?: boolean } | undefined =
+    // The DOOR wins Enter while it is showing (codex r6 P1): a fuzzy row
+    // (@bobby) must not swallow a keystroke aimed at a new exact @bob, and
+    // with no fuzzy rows Enter must not die on a renderable action.
+    (composeQuery && !composeTargetPresented ? { handle: composeQuery } : undefined) ??
     (filteredWaiting[0] ? { handle: filteredWaiting[0].with } : undefined) ??
     (promotedAgents[0] ? { handle: promotedAgents[0].handle } : undefined) ??
     (humanActive[0] ? { handle: humanActive[0].handle } : undefined) ??
@@ -832,6 +921,7 @@ export default function UnifiedBuddyList({
     setInviteCopyState(copied ? 'copied' : 'failed');
     setTimeout(() => setInviteCopyState(null), copied ? 2000 : 4000);
   };
+
 
   return (
     <div style={{
@@ -1299,6 +1389,11 @@ export default function UnifiedBuddyList({
                 never-loaded case stays hidden — the error text below
                 already covers "we can't see". */}
             {(mySessionsProbe === 'known' || mySessions.length > 0) && sessionsBlockEl}
+            {/* The door renders under an outage too (codex r13 P2):
+                presence and messaging are independent endpoints, and Enter
+                already reached this target — a keyboard-only action with no
+                visible counterpart is the defect, not the composing. */}
+            {firstMessageFallback}
             <div style={{ fontSize: '14px', fontWeight: 600, color: color.dim, marginBottom: '4px' }}>
               Can't reach /vibe
             </div>
@@ -1322,6 +1417,11 @@ export default function UnifiedBuddyList({
                 Buddy could have said "your session is here" and drew a void
                 instead. */}
             {sessionsBlockEl}
+            {/* The first-message door works from the quiet room too (codex
+                r3 P2): the fresh account with nobody on the board is exactly
+                who needs to start a conversation from a handle they were
+                given elsewhere. */}
+            {firstMessageFallback}
             <div style={{ fontSize: '14px', fontWeight: 600, color: color.dim, marginBottom: '4px' }}>
               Quiet in here
             </div>
@@ -1707,17 +1807,25 @@ export default function UnifiedBuddyList({
               </>
             )}
 
-            {/* No search matches */}
+            {/* No search matches. When the query LOOKS like a handle, the
+                dead end becomes the first-message door (buddy#53): one
+                action that opens the normal composer with nothing sent.
+                This claims nothing about the handle — existence is decided
+                at send, where the server refuses recipient_not_found (and
+                its lookup fails open, so nothing is ever "verified"). A
+                thread reaches RECENT only after a stored-message receipt,
+                because the thread list is server-served. */}
             {noMatches && (
               <div style={{
                 textAlign: 'center',
                 color: color.faint,
-                padding: '24px 16px',
+                padding: '24px 16px 8px',
                 fontSize: '12px',
               }}>
                 Nobody here matches “{query.trim()}”
               </div>
             )}
+            {firstMessageFallback}
 
 
             {/* Invite link — always at bottom when list is small */}

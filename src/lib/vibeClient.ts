@@ -146,6 +146,40 @@ function normalizeClientMetadata(value: unknown): VibeUser['clientMetadata'] | u
   return normalized;
 }
 
+/**
+ * The platform#272 announcement seam: kind and provenance live INSIDE the
+ * message `payload` object, and the label may render only when the platform
+ * itself generated the message — `payload.kind === 'announcement'` AND
+ * `payload.generated_by === 'platform'`. Anything less maps to undefined:
+ * a sender-authored payload claiming to be an announcement is not one.
+ *
+ * TRUST BOUNDARY (codex r3 P1): this predicate is only as honest as the
+ * SERVER's ownership of the field. Until platform#272 reserves/derives
+ * `generated_by` server-side (today the API copies req.body.payload
+ * verbatim, so any authenticated sender could forge it), this label must
+ * not reach production — which is exactly why this slice's merge is HELD
+ * on #272 being reviewed, merged and deployed with that reservation.
+ * Flagged on the #272 review.
+ */
+// KILL SWITCH (codex r3/r4 P1, in the 0a tradition): the server now OWNS the
+// provenance fields, and the deployed activation proof passed
+// (platform#272 @ 1ea638aa, merge 13f5a0fc; recorded 2026-08-21):
+//   · historical audit: 42,275 prod rows, zero pre-existing kind/generated_by
+//   · forged ordinary-JWT send (msg_mt3lpc7jSjFMWl) stored {"note":"forged"}
+//     — reserved fields stripped at the write boundary
+//   · genuine internal announcement (msg_mt3lpcxtcoGUzd) stored
+//     {"kind":"announcement","source":"qa_canary","generated_by":"platform"}
+// A caller can no longer wear the platform's voice, so the label may render.
+// If the reservation is ever weakened, flip this back to false first.
+export const ANNOUNCEMENT_SEAM_TRUSTED = true;
+
+export function announcementKind(payload: unknown): 'announcement' | undefined {
+  if (!ANNOUNCEMENT_SEAM_TRUSTED) return undefined;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const p = payload as { kind?: unknown; generated_by?: unknown };
+  return p.kind === 'announcement' && p.generated_by === 'platform' ? 'announcement' : undefined;
+}
+
 export interface VibeMessage {
   id: string;
   from: string;
@@ -153,6 +187,13 @@ export interface VibeMessage {
   content: string;
   timestamp: string;
   status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+  /**
+   * SERVED message kind (platform#272 seam): set if and only if the wire
+   * payload carried kind='announcement' AND generated_by='platform'
+   * (announcementKind above). Never inferred from body text or the sender
+   * handle. Absent on older servers → no claim, no label.
+   */
+  kind?: 'announcement';
 }
 
 export interface VibeThread {
@@ -992,10 +1033,22 @@ class BuddyClient {
   }
 
   async sendMessage(to: string, content: string): Promise<boolean> {
-    if (!this.handle) return false;
+    return (await this.sendMessageResult(to, content)).ok;
+  }
+
+  /**
+   * Send, and say WHY a refusal happened. The server refuses sends to
+   * handles it cannot find (`recipient_not_found`, a stable code) — the
+   * first-message door needs that reason to render an honest refusal
+   * instead of a generic Failed (buddy#53). The lookup FAILS OPEN on
+   * server-side errors, so an ok here never claims the handle was
+   * verified — it claims exactly one thing: this send was stored.
+   */
+  async sendMessageResult(to: string, content: string): Promise<{ ok: boolean; error?: string }> {
+    if (!this.handle) return { ok: false };
 
     try {
-      const { ok } = await this.authenticatedRequest({
+      const { ok, data } = await this.authenticatedRequest({
         method: 'POST',
         url: `${API_URL}/messages`,
         extraHeaders: { 'X-Vibe-Client': 'buddy' },
@@ -1006,10 +1059,14 @@ class BuddyClient {
         },
       });
 
-      return ok;
+      if (ok) return { ok: true };
+      const error = data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
+        ? (data as { error: string }).error
+        : undefined;
+      return { ok: false, error };
     } catch (e) {
       console.warn('sendMessage error:', e);
-      return false;
+      return { ok: false };
     }
   }
 
@@ -1177,6 +1234,9 @@ class BuddyClient {
         content: m.body || m.text,
         timestamp: m.created_at || m.createdAt,
         status: m.read ? 'read' : 'sent',
+        // Served kind, validated at the client edge (platform#272 stores
+        // it inside `payload`, with provenance): see announcementKind.
+        kind: announcementKind(m.payload),
       }));
       return { messages, error: false };
     } catch (e) {

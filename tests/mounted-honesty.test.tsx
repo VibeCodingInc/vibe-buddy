@@ -139,7 +139,9 @@ describe('DM broadcast-only banner (kill switch 0b shape)', () => {
     render(
       <DMPanel handle={ME} chatWith="bob_demo" onBack={() => {}} users={[them]} />,
     );
-    expect(screen.getByText(/hasn't been reading messages here/i)).toBeTruthy();
+    // Twice now, deliberately: the composer-moment notice AND the thread
+    // header's served reachability words (buddy#53 critique vocabulary).
+    expect(screen.getAllByText(/hasn't been reading messages here/i).length).toBeGreaterThan(0);
     // The retired accusation shapes must not return.
     expect(screen.queryByText(/isn't reading its messages/i)).toBeNull();
     expect(screen.queryByText(/until someone wires it up/i)).toBeNull();
