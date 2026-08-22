@@ -4,6 +4,7 @@
 // identities. Tree-shaken from any production build (imported only by the
 // DEV-gated Harness). Never ships.
 
+import { useEffect } from 'react';
 import DMPanel from '../components/DMPanel';
 import { buddyClient, type VibeMessage } from '../lib/vibeClient';
 import { setCachedMessages } from '../lib/messageCache';
@@ -79,6 +80,16 @@ export default function DMHarness({ state, width, height }: { state: string; wid
   }
   stub();
   setCachedMessages(ME, CHAT, messages);
+  // Dev capture driver: ?reply=1 clicks the first per-message 'reply' action
+  // after mount so the composer's reply chip is visible for a screenshot.
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has('reply')) return;
+    const id = setInterval(() => {
+      const b = document.querySelector<HTMLButtonElement>('[aria-label^="Reply to this message"]');
+      if (b) { b.click(); clearInterval(id); }
+    }, 50);
+    return () => clearInterval(id);
+  }, []);
   return (
     <div
       id="frame"

@@ -8,7 +8,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 
 const memStore = new Map<string, string>();
 (globalThis as any).localStorage = {
@@ -103,5 +103,47 @@ describe('the reply needle renders server-backed association', () => {
     const src = readFileSync(join(process.cwd(), 'src/components/DMPanel.tsx'), 'utf8');
     // The composer send does not set reply_to (that is a later slice).
     expect(src).not.toMatch(/reply_to|replyTo:/);
+  });
+});
+
+describe('the needle honors the deployed unavailable/not-loaded contract (codex CR on #6)', () => {
+  const mountMsgs = (msgs: VibeMessage[]) => {
+    setCachedMessages(ME, THEM, msgs);
+    render(<DMPanel handle={ME} chatWith={THEM} onBack={() => {}} users={[]} hasServerThread />);
+  };
+
+  it('an unavailable/deleted parent ({id, from:null, text:null}) renders quiet truthful copy, non-interactive', () => {
+    mountMsgs([reply({ id: 'gone', from: null, text: null })]);
+    expect(screen.getByText(/replying to an unavailable message/)).toBeTruthy();
+    // No empty quote, no link, no "opens the original".
+    expect(screen.queryByText('“”')).toBeNull();
+    expect(screen.queryByRole('link', { name: /Answering/ })).toBeNull();
+  });
+
+  it('a parent OUTSIDE the loaded page renders the quote as PLAIN text — no link, no arrow, no claim', () => {
+    // The reply references a parent id that is not present in the thread.
+    mountMsgs([reply({ id: 'not_loaded', from: ME, text: PARENT_TEXT })]);
+    // The quote still shows…
+    expect(screen.getByText(new RegExp(PARENT_TEXT.slice(0, 12)))).toBeTruthy();
+    // …but it is NOT an interactive link (parent unreachable in this view).
+    expect(screen.queryByRole('link', { name: /Answering/ })).toBeNull();
+  });
+
+  it('a loaded parent IS an interactive link and the highlight is genuinely brief', () => {
+    vi.useFakeTimers();
+    try {
+      mountMsgs([parent, reply({ id: 'p1', from: ME, text: PARENT_TEXT })]);
+      const parentEl = document.querySelector('[data-msg-id="p1"]') as HTMLElement;
+      parentEl.scrollIntoView = vi.fn();
+      const needle = screen.getByRole('link', { name: /Answering/ });
+      fireEvent.click(needle);
+      // Highlighted now…
+      expect((document.querySelector('[data-msg-id="p1"]') as HTMLElement).style.outline).toContain('#6B8FFF');
+      // …and cleared after the delay, without animation.
+      act(() => { vi.advanceTimersByTime(2600); });
+      expect((document.querySelector('[data-msg-id="p1"]') as HTMLElement).style.outline).toBe('none');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

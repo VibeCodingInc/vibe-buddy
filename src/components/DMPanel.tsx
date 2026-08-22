@@ -198,17 +198,21 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [needleFocusedId, setNeedleFocusedId] = useState<string | null>(null);
 
-  // Move to + briefly highlight the parent a needle points at. Chronology is
-  // never changed (the reply stays in place); this only scrolls. If the
-  // parent is older than the loaded page it won't be in the DOM — then the
-  // needle's own quoted text is the peek, and this is a no-op (honest: we do
-  // not fabricate a jump to something not present). No read-state change.
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Move to + highlight the parent a needle points at, then clear the
+  // highlight after a short delay so "brief" is true (no animation — the
+  // outline just appears and later disappears; reduced-motion safe). Only
+  // called when the parent IS loaded (the needle is interactive only then),
+  // so this never no-ops. Chronology is never changed; no read-state change.
   const scrollToParent = (parentId: string) => {
     const el = scrollRef.current?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(parentId)}"]`);
     if (!el) return;
     el.scrollIntoView({ block: 'center' });
     setHighlightedId(parentId);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightedId(null), 2500);
   };
+  useEffect(() => () => { if (highlightTimer.current) clearTimeout(highlightTimer.current); }, []);
 
   const them = users.find(u => u.handle === chatWith) || null;
   const me = users.find(u => u.handle === handle) || null;
@@ -586,50 +590,72 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               }}
             >
               {/* THE NEEDLE — server-backed reply association (buddy magic
-                  pass). Renders only when the platform returned a quoted
-                  parent object; QUOTES the sanitized parent verbatim
-                  (truncated), never classifies it — "DECISION" shows only if
-                  the human literally wrote it. No timestamp (not in the read
-                  shape). Click/Enter moves to + highlights the parent without
-                  changing read state. Never inferred; absent → ordinary
-                  message, no chrome. */}
-              {msg.replyTo && (
-                <div
-                  role="link"
-                  tabIndex={0}
-                  aria-label={`Answering: "${msg.replyTo.text}". Opens the original message.`}
-                  onClick={() => scrollToParent(msg.replyTo!.id)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scrollToParent(msg.replyTo!.id); } }}
-                  onFocus={() => setNeedleFocusedId(msg.id)}
-                  onBlur={() => setNeedleFocusedId(null)}
-                  style={{
-                    fontSize: '11px',
-                    color: color.faint,
-                    marginBottom: '2px',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    gap: '4px',
-                    alignItems: 'baseline',
-                    maxWidth: '100%',
-                    outline: needleFocusedId === msg.id ? `1px solid ${color.blue}` : 'none',
-                    outlineOffset: '1px',
-                    borderRadius: '3px',
-                  }}
-                >
-                  <span aria-hidden style={{ flexShrink: 0 }}>↳ answering</span>
-                  <span
-                    style={{
-                      color: color.dim,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    “{msg.replyTo.text}”
-                  </span>
-                  <span aria-hidden style={{ color: color.blue, flexShrink: 0 }}>›</span>
+                  pass). Three deployed-contract states:
+                   · unavailable/deleted parent → served as
+                     {id, from:null, text:null}: render quiet, plain,
+                     non-interactive "↳ replying to an unavailable message".
+                   · available parent that IS loaded in this view → an
+                     interactive link (arrow, pointer, "opens the original");
+                     click/Enter moves to + highlights it.
+                   · available parent NOT in the loaded page → the served
+                     quote as PLAIN text (no arrow, no link, no claim) — we
+                     never promise to open something we can't reach.
+                  QUOTES the sanitized parent verbatim, never classifies it.
+                  Absent replyTo → ordinary message, no chrome. */}
+              {msg.replyTo && msg.replyTo.text === null && (
+                <div style={{ fontSize: '11px', color: color.faint, marginBottom: '2px' }}>
+                  ↳ replying to an unavailable message
                 </div>
               )}
+              {msg.replyTo && msg.replyTo.text !== null && (() => {
+                const parentLoaded = messages.some((mm) => mm.id === msg.replyTo!.id);
+                const quote = (
+                  <span
+                    style={{ color: color.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
+                    “{msg.replyTo!.text}”
+                  </span>
+                );
+                if (!parentLoaded) {
+                  // PLAIN, non-interactive: no link role, no arrow, no
+                  // pointer, no "opens the original" claim — the parent is
+                  // not reachable in this view, so the quote is just a quote.
+                  return (
+                    <div style={{ fontSize: '11px', color: color.faint, marginBottom: '2px', display: 'flex', gap: '4px', alignItems: 'baseline', maxWidth: '100%' }}>
+                      <span style={{ flexShrink: 0 }}>↳ answering</span>
+                      {quote}
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    role="link"
+                    tabIndex={0}
+                    aria-label={`Answering: "${msg.replyTo!.text}". Opens the original message.`}
+                    onClick={() => scrollToParent(msg.replyTo!.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scrollToParent(msg.replyTo!.id); } }}
+                    onFocus={() => setNeedleFocusedId(msg.id)}
+                    onBlur={() => setNeedleFocusedId(null)}
+                    style={{
+                      fontSize: '11px',
+                      color: color.faint,
+                      marginBottom: '2px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      gap: '4px',
+                      alignItems: 'baseline',
+                      maxWidth: '100%',
+                      outline: needleFocusedId === msg.id ? `1px solid ${color.blue}` : 'none',
+                      outlineOffset: '1px',
+                      borderRadius: '3px',
+                    }}
+                  >
+                    <span aria-hidden style={{ flexShrink: 0 }}>↳ answering</span>
+                    {quote}
+                    <span aria-hidden style={{ color: color.blue, flexShrink: 0 }}>›</span>
+                  </div>
+                );
+              })()}
               {/* SERVED kind only (platform#272; coordinator ruling): the
                   label renders when the platform marked the message — never
                   inferred from body text or the sender handle, and never
