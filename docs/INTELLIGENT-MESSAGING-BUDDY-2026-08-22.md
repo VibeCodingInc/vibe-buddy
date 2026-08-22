@@ -522,3 +522,29 @@ composer moment: the intent chooser (moment 1)**:
 **Recommendation:** run 3–4 real 3A exchanges (Seth or a confirmed sending
 identity → slashvibebot) to confirm the shape, THEN build only the intent-
 chooser fixture prototype. Do not build ahead of the live evidence.
+
+---
+
+## Live Pass 3A — identity ruling + observation protocol (2026-08-22)
+
+- **Sender:** @brightseth, fresh Terminal session.
+- **Recipient:** @vibetester1 (occupied by slashvibebot — different local context).
+- **Buddy lane (this reader):** cross-surface critic only. Does NOT send,
+  reauthenticate, or occupy either identity. Observation is of the named
+  @vibetester1 thread as surfaced by Seth (screenshot/paste) — reading via
+  the vibe MCP would mean acting as an identity, which the ruling forbids.
+
+**Adopted grammar (supersedes the rehearsal's label vocabulary for sent text):**
+- one intent word: `ANSWER` / `DECISION` / `REVIEW` / `FYI`.
+- Charge ≤ 3 short sentences, in the human's voice.
+- NO receipt-like fields ("local-agent inference:" etc.) in the message.
+- provenance lives **naturally in prose**: "my agent noticed…", "I know…",
+  "my read is…" — the honesty stays, the form disappears.
+- the rare playful connection sounds like a person noticing, never a platform
+  assertion.
+
+**On arrival of the one real question, the reader checks:** (1) Spark
+understood immediately · (2) Charge stays quiet/readable · (3) provenance
+clear without becoming form-like · (4) reply contributes genuinely new
+recipient-side context · (5) report cross-surface. **Do not implement the
+fixture prototype yet.**
