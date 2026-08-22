@@ -714,3 +714,33 @@ smallest surface that would have prevented the misattribution — and it's a
 reader-side requirement, distinct from the (parked) served-matching work.
 
 No implementation, no prototype, no resend. Reader posture holds.
+
+### Direction (2026-08-22): reply association first, but frame it correctly
+
+**Priority:** reply association over the fixture composer prototype.
+
+**Framing (do not conflate):**
+- A quoted reply marker is **messaging foundation / parity** — ordinary chat
+  has it; it is NOT by itself the intelligent-messaging differentiator.
+- The **differentiator** is using the durable reply target to **reconnect an
+  answer to the correct project / session / decision** — the thing ordinary
+  chat can't do. The marker is the substrate that makes that reconnection
+  honest and visible.
+
+**Gate:** wait for **Platform's read-only contract audit** of what actually
+exists. **Do NOT implement or assume a `reply_to` field.** Concepts below are
+QUEUED, not designed, until Platform reports the real contract shape.
+
+**Queued screenshot-first concepts (after the audit):**
+1. a **compact quoted Spark** above the reply (parity — "↳ replying to: …").
+2. the **originating session / project shown only when served** (the
+   differentiator groundwork — never inferred; rendered only if the platform
+   actually carries the origin).
+3. **truthful unknown** when no origin is available ("origin not recorded" —
+   never a guess, never a fabricated link).
+
+**Camille (warm human move):** stays queued. **Platform drafts** the message;
+**this lane approves the wording** before it goes to a real person, with
+explicit consent. Pass 3B only after that.
+
+No build, merge, or release. Reader posture holds pending Platform's audit.
