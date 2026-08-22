@@ -13,6 +13,7 @@
 
 import { useState, useEffect } from 'react';
 import UnifiedBuddyList from '../components/UnifiedBuddyList';
+import DMHarness from './DMHarness';
 
 // Dev-only interaction driver (this harness is tree-shaken from any shipped
 // build): `?q=<text>` opens the header Search and types <text> into the REAL
@@ -110,6 +111,13 @@ export default function Harness() {
   // shot and clipped the row actions off the right edge
   // (scripts/capture-ui.mjs).
   const bare = params.get('bare') === '1';
+  const dm = params.get('dm');
+  if (dm) {
+    const el = <DMHarness state={dm} width={width} height={height} />;
+    return bare ? <div data-harness-rendered="1">{el}</div> : (
+      <div style={{ minHeight: '100vh', background: '#1a1c20', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{el}</div>
+    );
+  }
   useSearchDriver(params.get('q'));
 
   if (bare && fixture) {

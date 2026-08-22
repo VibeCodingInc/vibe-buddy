@@ -193,6 +193,22 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSentRef = useRef(0);
+  // The needle's tap target: which parent is briefly highlighted, and which
+  // needle has keyboard focus (explicit ring in the dark UI).
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [needleFocusedId, setNeedleFocusedId] = useState<string | null>(null);
+
+  // Move to + briefly highlight the parent a needle points at. Chronology is
+  // never changed (the reply stays in place); this only scrolls. If the
+  // parent is older than the loaded page it won't be in the DOM — then the
+  // needle's own quoted text is the peek, and this is a no-op (honest: we do
+  // not fabricate a jump to something not present). No read-state change.
+  const scrollToParent = (parentId: string) => {
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(parentId)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    setHighlightedId(parentId);
+  };
 
   const them = users.find(u => u.handle === chatWith) || null;
   const me = users.find(u => u.handle === handle) || null;
@@ -556,11 +572,64 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           return (
             <div
               key={msg.id}
+              data-msg-id={msg.id}
               style={{
                 alignSelf: isMe ? 'flex-end' : 'flex-start',
                 maxWidth: '85%',
+                // Brief highlight when a needle points here — an instant
+                // outline (no animation: honors no-motion-on-chrome +
+                // reduced-motion), cleared on the next interaction. It does
+                // not change read state.
+                outline: highlightedId === msg.id ? `1px solid ${color.blue}` : 'none',
+                outlineOffset: '2px',
+                borderRadius: '12px',
               }}
             >
+              {/* THE NEEDLE — server-backed reply association (buddy magic
+                  pass). Renders only when the platform returned a quoted
+                  parent object; QUOTES the sanitized parent verbatim
+                  (truncated), never classifies it — "DECISION" shows only if
+                  the human literally wrote it. No timestamp (not in the read
+                  shape). Click/Enter moves to + highlights the parent without
+                  changing read state. Never inferred; absent → ordinary
+                  message, no chrome. */}
+              {msg.replyTo && (
+                <div
+                  role="link"
+                  tabIndex={0}
+                  aria-label={`Answering: "${msg.replyTo.text}". Opens the original message.`}
+                  onClick={() => scrollToParent(msg.replyTo!.id)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scrollToParent(msg.replyTo!.id); } }}
+                  onFocus={() => setNeedleFocusedId(msg.id)}
+                  onBlur={() => setNeedleFocusedId(null)}
+                  style={{
+                    fontSize: '11px',
+                    color: color.faint,
+                    marginBottom: '2px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    gap: '4px',
+                    alignItems: 'baseline',
+                    maxWidth: '100%',
+                    outline: needleFocusedId === msg.id ? `1px solid ${color.blue}` : 'none',
+                    outlineOffset: '1px',
+                    borderRadius: '3px',
+                  }}
+                >
+                  <span aria-hidden style={{ flexShrink: 0 }}>↳ answering</span>
+                  <span
+                    style={{
+                      color: color.dim,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    “{msg.replyTo.text}”
+                  </span>
+                  <span aria-hidden style={{ color: color.blue, flexShrink: 0 }}>›</span>
+                </div>
+              )}
               {/* SERVED kind only (platform#272; coordinator ruling): the
                   label renders when the platform marked the message — never
                   inferred from body text or the sender handle, and never

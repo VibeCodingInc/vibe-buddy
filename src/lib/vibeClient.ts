@@ -194,6 +194,21 @@ export interface VibeMessage {
    * handle. Absent on older servers → no claim, no label.
    */
   kind?: 'announcement';
+  /**
+   * SERVER-BACKED reply association (the "needle"). The platform's thread
+   * read (getThreadMessages) returns, per reply, the quoted parent as
+   * `reply_to: { id, from, text }` — text is the parent's sanitized body
+   * (≤200 chars). This is authoritative association, never inference.
+   *
+   * KNOWN READ-SHAPE LIMITS (returned to Platform, not worked around):
+   * (1) the object carries NO parent timestamp — so the needle cannot show
+   *     a relative age this slice; (2) a reply whose parent was deleted
+   *     comes back as `reply_to: null`, indistinguishable from a non-reply,
+   *     because the read exposes only the JOINed parent, never the raw
+   *     reply_to_id — so "replying to an unavailable message" is not
+   *     renderable until the raw id is exposed.
+   */
+  replyTo?: { id: string; from: string; text: string };
 }
 
 export interface VibeThread {
@@ -1237,6 +1252,18 @@ class BuddyClient {
         // Served kind, validated at the client edge (platform#272 stores
         // it inside `payload`, with provenance): see announcementKind.
         kind: announcementKind(m.payload),
+        // Server-backed reply association. Only the OBJECT shape (the quoted
+        // parent from getThreadMessages) becomes a needle; the ask-resolver
+        // path returns reply_to as a bare id string, which is not a quoted
+        // parent and must not render a needle. Never inferred.
+        replyTo:
+          m.reply_to && typeof m.reply_to === 'object' && typeof m.reply_to.id === 'string'
+            ? {
+                id: m.reply_to.id,
+                from: typeof m.reply_to.from === 'string' ? m.reply_to.from : '',
+                text: typeof m.reply_to.text === 'string' ? m.reply_to.text : '',
+              }
+            : undefined,
       }));
       return { messages, error: false };
     } catch (e) {
