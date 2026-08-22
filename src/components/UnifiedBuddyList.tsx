@@ -1102,7 +1102,10 @@ export default function UnifiedBuddyList({
           <button
             type="button"
             aria-label="Search people and sessions"
-            aria-expanded={searchRevealed || !!query.trim()}
+            // Reflects the field's ACTUAL visibility: it also stands open on
+            // its own in a crowded room (showSearch), not only when revealed
+            // or queried — so the ARIA state can't disagree with the screen.
+            aria-expanded={showSearch || searchRevealed || !!query.trim()}
             onClick={() => { setSearchRevealed(true); searchRef.current?.focus(); }}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}

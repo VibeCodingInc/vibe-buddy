@@ -454,4 +454,34 @@ describe('the Search affordance is visible, quiet, and reveals the real field (c
     const fields = await screen.findAllByPlaceholderText(/Search the room/i);
     expect(fields).toHaveLength(1);
   });
+
+  it('in a crowded room the field stands open and ARIA agrees (codex review on #5)', () => {
+    // At 20+ searchable principals the field is visibly expanded on its own,
+    // with no click — so aria-expanded must already be true, not false.
+    const many: VibeUser[] = Array.from({ length: 24 }, (_, i) => ({
+      handle: `builder_${i}`, oneLiner: '', status: 'active' as const,
+    }));
+    render(
+      <UnifiedBuddyList
+        handle={ME}
+        greeter="guide_demo"
+        users={many}
+        sessions={[]}
+        mySessions={[]}
+        mySessionsProbe="known"
+        threads={[]}
+        presenceError={false}
+        recentlyHere={[]}
+        myPresence={{ prefs: { sharing: true, detail: 'full', statusText: null }, broadcast: null, lastLandedAt: Date.now() }}
+        onPresenceChange={() => {}}
+        onUserClick={() => {}}
+        onSignOut={() => {}}
+        onSession={() => {}}
+      />,
+    );
+    // The field is visibly present without any interaction…
+    expect(screen.getByPlaceholderText(/Search the room/i)).toBeTruthy();
+    // …and the control's ARIA state matches what the screen shows.
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
+  });
 });
