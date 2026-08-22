@@ -99,10 +99,17 @@ describe('the reply needle renders server-backed association', () => {
     expect(needle.textContent).not.toMatch(/DECISION|QUESTION|REVIEW/);
   });
 
-  it('render-only: no reply_to write path is introduced by this slice', () => {
+  it('the NEEDLE path is render-only — it never sends', () => {
+    // Scoped to the needle itself (not the whole file): the write side is a
+    // separate slice (#7 reply targeting), and the combined 0.5.66 build
+    // legitimately contains it — so this proves the needle READS, never
+    // writes, rather than banning reply_to from the file.
     const src = readFileSync(join(process.cwd(), 'src/components/DMPanel.tsx'), 'utf8');
-    // The composer send does not set reply_to (that is a later slice).
-    expect(src).not.toMatch(/reply_to|replyTo:/);
+    // The needle's activation is scrollToParent — a scroll, not a send.
+    expect(src).toMatch(/onClick=\{\(\) => scrollToParent\(msg\.replyTo!\.id\)\}/);
+    // scrollToParent performs no network send.
+    const fn = src.slice(src.indexOf('const scrollToParent ='), src.indexOf('const scrollToParent =') + 600);
+    expect(fn).not.toMatch(/sendMessage|sendMessageResult/);
   });
 });
 
