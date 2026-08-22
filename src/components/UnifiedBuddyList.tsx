@@ -457,6 +457,9 @@ export default function UnifiedBuddyList({
   // Summoned by `/` in a room below the threshold. The capability is always
   // there; only the standing box is rationed.
   const [searchRevealed, setSearchRevealed] = useState(false);
+  // Keyboard-focus ring for the header Search control — the dark UI has no
+  // default-visible focus, so this makes keyboard focus explicit.
+  const [searchFocused, setSearchFocused] = useState(false);
   const q = query.trim().toLowerCase();
   // SEARCH MATCHES WHAT IS SHOWN. tech_stack was in this predicate; with the
   // pills gone it surfaced rows containing none of the query text, and kept
@@ -1090,6 +1093,42 @@ export default function UnifiedBuddyList({
               {unreadThreadCount + zoneSessionCount}
             </span>
           )}
+          {/* Always-visible, quiet Search affordance (the / shortcut is real
+              but invisible). Reveals and focuses the SAME search field; no
+              modal, no new search system. Subdued by default, blue only when
+              active (revealed or a live query) — the one place blue earns its
+              meaning here. Keyboard-activates as a button; its focus ring is
+              explicit so the dark UI still shows keyboard focus. */}
+          <button
+            type="button"
+            aria-label="Search people and sessions"
+            // Reflects the field's ACTUAL visibility: it also stands open on
+            // its own in a crowded room (showSearch), not only when revealed
+            // or queried — so the ARIA state can't disagree with the screen.
+            aria-expanded={showSearch || searchRevealed || !!query.trim()}
+            onClick={() => { setSearchRevealed(true); searchRef.current?.focus(); }}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: (searchRevealed || query.trim()) ? color.blue : color.faint,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+              fontSize: '11px',
+              lineHeight: 1,
+              padding: '2px 4px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '3px',
+              borderRadius: '4px',
+              outline: searchFocused ? `1px solid ${color.blue}` : 'none',
+              outlineOffset: '1px',
+            }}
+          >
+            <span style={{ fontSize: '13px' }} aria-hidden>⌕</span>
+            <span>Search</span>
+          </button>
           {onCompact && (
             <span
               onClick={onCompact}
