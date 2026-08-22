@@ -10,10 +10,9 @@ live room). It is a menu-bar-sized presence board, a DM client, and a doorbell.
 Share it: **[slashvibe.dev/buddy](https://www.slashvibe.dev/buddy)** — one screen, one
 download button, always the current version.
 
-> **Version note:** the latest signed binary is **0.5.64** (from
-> [vibe-buddy-releases](https://github.com/VibeCodingInc/vibe-buddy-releases/releases));
-> source `main` runs **ahead of it**. Building from source gives you code
-> ahead of the shipped release.
+> **Version note:** source `main` may run ahead of the latest signed release.
+> Download the current signed build from
+> [vibe-buddy-releases](https://github.com/VibeCodingInc/vibe-buddy-releases/releases).
 
 This README describes the client, not the product strategy. The public product
 docs live at [docs.slashvibe.dev](https://docs.slashvibe.dev).
