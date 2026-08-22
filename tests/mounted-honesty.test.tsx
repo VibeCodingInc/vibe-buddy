@@ -12,7 +12,7 @@
 // purpose, they change in one place and these tests follow.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // Tauri IPC does not exist under jsdom. Every invoke answers with the
@@ -407,4 +407,51 @@ describe('the send box says what will happen to the message', () => {
     expect(await screen.findByText(/nothing here shows whether @uriel reads or answers/)).toBeTruthy();
   });
 
+});
+
+describe('the Search affordance is visible, quiet, and reveals the real field (coordinator ask on public source)', () => {
+  const btn = () => screen.getByRole('button', { name: 'Search people and sessions' });
+
+  it('is always present in the header, even in a populated room', () => {
+    mountFixture('current');
+    expect(btn()).toBeTruthy();
+    expect(screen.getByText('Search')).toBeTruthy();
+  });
+
+  it('is subdued by default and turns blue only when active', () => {
+    mountFixture('current');
+    // Quiet by default: faint, not the /vibe blue.
+    expect(btn().style.color).toBe('rgb(107, 114, 128)'); // color.faint
+    expect(btn().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('clicking reveals and focuses the existing search field', async () => {
+    const user = userEvent.setup();
+    mountFixture('current');
+    await user.click(btn());
+    const field = screen.getByPlaceholderText(/Search the room/i);
+    expect(field).toBeTruthy();
+    expect(document.activeElement).toBe(field);
+    // Now active → blue and expanded.
+    expect(btn().style.color).toBe('rgb(107, 143, 255)'); // color.blue
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps a visible focus ring for keyboard users', async () => {
+    mountFixture('current');
+    fireEvent.focus(btn());
+    await waitFor(() => expect(btn().style.outline).toContain('#6B8FFF')); // color.blue
+    fireEvent.blur(btn());
+    await waitFor(() => expect(btn().style.outline).toBe('none'));
+  });
+
+  it('the search field stays the ONLY search UI — the control adds no second system', async () => {
+    const user = userEvent.setup();
+    mountFixture('current');
+    await user.click(btn());
+    // The control drives the same searchRevealed/searchRef path, not a new
+    // input: exactly one search field exists after reveal.
+    const fields = await screen.findAllByPlaceholderText(/Search the room/i);
+    expect(fields).toHaveLength(1);
+  });
 });

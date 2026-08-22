@@ -11,8 +11,35 @@
 // import.meta.env.DEV and loaded dynamically, so production builds tree-shake
 // the whole directory away. tests/regressions.test.ts guards that.
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import UnifiedBuddyList from '../components/UnifiedBuddyList';
+
+// Dev-only interaction driver (this harness is tree-shaken from any shipped
+// build): `?q=<text>` opens the header Search and types <text> into the REAL
+// search field, so search-open / no-match / exact-handle states can be
+// captured at window size without adding any seam to the component. Uses the
+// native input value setter so the controlled input gets a genuine change.
+function useSearchDriver(q: string | null) {
+  useEffect(() => {
+    if (q === null) return;
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      const btn = document.querySelector<HTMLButtonElement>('[aria-label="Search people and sessions"]');
+      if (btn) btn.click();
+      const input = document.querySelector<HTMLInputElement>('input[type="search"], input[placeholder*="earch"]');
+      if (input) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(input, q);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        clearInterval(id);
+      } else if (tries > 20) {
+        clearInterval(id);
+      }
+    }, 50);
+    return () => clearInterval(id);
+  }, [q]);
+}
 
 // The notification offer is real App logic keyed on OS permission state, which
 // a browser harness cannot represent honestly — silence it so captures show
@@ -83,6 +110,7 @@ export default function Harness() {
   // shot and clipped the row actions off the right edge
   // (scripts/capture-ui.mjs).
   const bare = params.get('bare') === '1';
+  useSearchDriver(params.get('q'));
 
   if (bare && fixture) {
     // The marker is the capture's proof of life: an ErrorBoundary or a
