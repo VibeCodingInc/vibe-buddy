@@ -185,6 +185,15 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // presentation state only; nothing here creates or implies a thread.
   const [failReasons, setFailReasons] = useState<Map<string, string>>(new Map());
   const [input, setInput] = useState('');
+  // The message the human explicitly chose to answer. Set ONLY by the
+  // per-message "reply" action; never auto-selected, never a newest-message
+  // default. null = an ordinary unlinked send.
+  const [replyingTo, setReplyingTo] = useState<{ id: string; from: string; text: string } | null>(null);
+  // Per-optimistic-message reply target, so a Retry of a FAILED reply-
+  // targeted send re-sends with the same parent (the failed bubble + Retry
+  // is Buddy's established "draft intact" mechanism; this keeps the target
+  // intact alongside the text). Keyed by the optimistic id.
+  const [failReplyTargets, setFailReplyTargets] = useState<Map<string, string>>(new Map());
   // Drives the shortcut hint only — shown while composing, silent otherwise,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
@@ -292,20 +301,31 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const send = async (text?: string) => {
     const msg = text || input.trim();
     if (!msg || sending) return;
+    // The parent the HUMAN explicitly chose to answer (never a silent
+    // newest-message default). Captured before the async send so an arriving
+    // message can't shift the target mid-flight.
+    const replyTarget = replyingTo;
+    const optimisticId = `local_${Date.now()}`;
     setSending(true);
     setInput('');
+    // The composed unit (text + chosen target) becomes the pending message;
+    // the composer + chip clear together, exactly like an ordinary send.
+    setReplyingTo(null);
 
     const optimistic: VibeMessage = {
-      id: `local_${Date.now()}`,
+      id: optimisticId,
       from: handle,
       to: chatWith,
       content: msg,
       timestamp: new Date().toISOString(),
       status: 'pending',
+      // Deliberately NO replyTo on the optimistic bubble: the needle renders
+      // only from the SERVER-served link on the next read, never from the
+      // local choice (coordinator scope).
     };
     setMessages((prev) => [...prev, optimistic]);
 
-    const result = await buddyClient.sendMessageResult(chatWith, msg);
+    const result = await buddyClient.sendMessageResult(chatWith, msg, replyTarget?.id);
     if (result.ok) {
       // A stored-message receipt is exactly the evidence the receipt
       // boundary waits for — the server thread now exists; polling may join,
@@ -315,10 +335,14 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     }
     if (!result.ok) {
       setMessages((prev) =>
-        prev.map((m) => (m.id === optimistic.id ? { ...m, status: 'failed' } : m))
+        prev.map((m) => (m.id === optimisticId ? { ...m, status: 'failed' } : m))
       );
       if (result.error) {
-        setFailReasons((prev) => new Map(prev).set(optimistic.id, result.error!));
+        setFailReasons((prev) => new Map(prev).set(optimisticId, result.error!));
+      }
+      // Keep the chosen target with the failed message so Retry re-sends it.
+      if (replyTarget) {
+        setFailReplyTargets((prev) => new Map(prev).set(optimisticId, replyTarget.id));
       }
     }
     setSending(false);
@@ -338,10 +362,18 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       next.delete(failed.id);
       return next;
     });
-    const result = await buddyClient.sendMessageResult(chatWith, failed.content);
+    // Re-send with the reply target the failed message carried, so a Retry
+    // preserves the human's chosen parent (never silently dropping it).
+    const result = await buddyClient.sendMessageResult(chatWith, failed.content, failReplyTargets.get(failed.id));
     if (result.ok) {
       realtime.recordStoredMessageWith(chatWith);
       setPollArmed(true);
+      setFailReplyTargets((prev) => {
+        if (!prev.has(failed.id)) return prev;
+        const next = new Map(prev);
+        next.delete(failed.id);
+        return next;
+      });
     }
     if (!result.ok) {
       setMessages((prev) =>
@@ -634,6 +666,29 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                 }}
               >
                 {formatMessageTime(msg.timestamp)}
+                {/* Explicit reply targeting: the human chooses THIS message
+                    as the one they're answering. Only on durable messages
+                    (a local_ optimistic has no server id to target). Never
+                    auto-selected. */}
+                {!msg.id.startsWith('local_') && msg.status !== 'failed' && (
+                  <button
+                    type="button"
+                    onClick={() => setReplyingTo({ id: msg.id, from: msg.from, text: msg.content })}
+                    aria-label={`Reply to this message: "${msg.content.slice(0, 80)}"`}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: color.faint,
+                      fontSize: '9px',
+                      fontFamily: 'inherit',
+                      cursor: 'pointer',
+                      marginLeft: '6px',
+                      padding: 0,
+                    }}
+                  >
+                    reply
+                  </button>
+                )}
                 {msg.status === 'failed' && failReasons.get(msg.id) === 'recipient_not_found' && (
                   // The server's refusal, stated as HISTORY. It outranks a
                   // roster row (codex r9 P2): the snapshot may be RETAINED
@@ -732,6 +787,45 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           flexShrink: 0,
         }}
       >
+        {/* The chosen reply target, shown before send so the human sees which
+            message this will answer — and can cancel back to an ordinary
+            send. This is the ONLY thing that sets reply_to; there is no
+            silent default. */}
+        {replyingTo && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: '6px',
+              marginBottom: '6px',
+              fontSize: '11px',
+              color: color.faint,
+            }}
+          >
+            <span style={{ flexShrink: 0 }}>↳ replying to</span>
+            <span style={{ color: color.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              “{replyingTo.text}”
+            </span>
+            <button
+              type="button"
+              onClick={() => setReplyingTo(null)}
+              aria-label="Cancel reply targeting; send as an ordinary message"
+              style={{
+                marginLeft: 'auto',
+                flexShrink: 0,
+                background: 'transparent',
+                border: 'none',
+                color: color.faint,
+                fontFamily: 'inherit',
+                fontSize: '12px',
+                cursor: 'pointer',
+                padding: '0 2px',
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: '6px' }}>
           <textarea
             value={input}
