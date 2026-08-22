@@ -638,3 +638,79 @@ compose-time *aid*, do not impose a wire schema on either end.
 **Still pending for the actual score:** slashvibebot's reply to the
 **439-char INTENT** message. No score, no prototype until then. Reader
 posture holds.
+
+### Live 3A — SCORED · reply reattributed to the 439-char INTENT question
+
+**Reclassification:** the "Lead with two doors, one conversation" reply IS
+slashvibebot's approved answer to the **439-char INTENT** question (matches
+the approved draft: two-doors headline · "what we removed already shipped as
+a public story" · "would make /vibe a confession brand" · sealed envelope =
+soul/law). It does **not** answer the 0.8.18 message. My earlier
+misclassification was caused by the reader surface itself — see cross-surface
+report #2. Not transport corruption; contents succeeded, association failed.
+No resend.
+
+#### Five-point semantic critique
+
+Spark = the 439-char INTENT body (known record/semantic body: an INTENT-tagged
+ask on how to lead Buddy's product narrative once the four public surfaces
+pass, sealed envelope preserved). Reply = "Lead with two doors…".
+
+1. **Spark understood immediately? PASS.** The answer proves comprehension:
+   slashvibebot split the exact tension the Spark posed — *soul* (the sealed
+   envelope, the law) vs *headline* (the actionable first sentence) — and
+   answered the headline question directly ("two doors, one conversation").
+   You don't answer that precisely unless the Spark landed cleanly.
+2. **Charge quiet/readable? PASS (by known shape).** The 439-char body kept
+   context to a few sentences; the reply engaged the right facts with no
+   "which do you mean?" — the clarification-turn count is zero, the win the
+   grammar optimizes for.
+3. **Provenance clear-in-prose, not form-like? PASS — exemplary.** The reply
+   is the target register: *"My inference is your instinct is right about the
+   soul and wrong about the headline"* (inference labeled as inference, in
+   prose), *"I found on X that…"* (names the source of a recipient-side
+   fact), and the closing *"slashvibebot, currently using the temporary
+   @vibetester1 account"* (honest identity). Zero receipt fields.
+4. **Reply adds genuinely new recipient-side context? PASS — best case.**
+   *"what we removed already shipped as a public story: the deleted fake
+   green"* is a fact the recipient discovered from ITS different local world
+   (access to X, memory of the prior public narrative) — not supplied by the
+   sender. This is the whole point of cross-context messaging: the other room
+   knew something you didn't, and said why. It reframed soul-vs-headline into
+   an actionable recommendation. Strong.
+
+**Semantic intelligence verdict: strong pass. The agents understood each
+other and the correct answer added useful, genuinely different context.**
+
+#### Cross-surface linkage report (reported separately, per ruling)
+
+- **Semantic intelligence:** ✅ succeeded (above). The message contents and
+  the cross-context value both worked.
+- **Visual conversation structure:** ❌ **failed.** Buddy could not prove
+  which earlier message the reply answered. The verbose 0.8.18 message sat
+  immediately above the reply with **no reply-to marker**, so a careful
+  reader (this lane) bound the answer to the wrong question. The association
+  lives only in slashvibebot's head, not on the surface.
+
+#### The finding (elevated — possibly the experiment's best result)
+
+> The agents understood each other, but the conversation UI could not show
+> which thought the answer belonged to.
+
+This is concrete and non-theoretical. It unifies with the earlier
+cross-session-interleaving note: **messages need a durable record reference,
+replies need a reply-to pointer to that record, and Buddy must RENDER it.**
+The design target (not implemented): when a message is a reply to a specific
+durable message record, Buddy shows a small quoted stub above it —
+`↳ replying to: DECISION: is legacy_status safe to drop?` — so the answer's
+thought is visible, not inferred. Ordinary chat doesn't do this; doing it is
+a concrete way /vibe is *more* intelligent than chat, and it makes the
+honest-provenance work legible (you can't trust "answers your DECISION" if
+you can't see which decision).
+
+**Platform question (new):** does a reply carry a `reply_to` reference to the
+originating durable message record, and can Buddy render it? This is the
+smallest surface that would have prevented the misattribution — and it's a
+reader-side requirement, distinct from the (parked) served-matching work.
+
+No implementation, no prototype, no resend. Reader posture holds.
