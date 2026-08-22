@@ -548,3 +548,14 @@ understood immediately · (2) Charge stays quiet/readable · (3) provenance
 clear without becoming form-like · (4) reply contributes genuinely new
 recipient-side context · (5) report cross-surface. **Do not implement the
 fixture prototype yet.**
+
+### Live 3A — send recorded (reply pending)
+
+- @brightseth → @vibetester1, human-approved, **439 chars sent verbatim**,
+  inbox untouched. The semantic messaging experiment is VALID.
+- **Protocol deviation (separate evidence, NOT an intelligent-message
+  failure):** the running client stayed **0.8.16** while the cwd config pins
+  **0.8.17**, so the response lacked a message ID + server timestamp — the
+  **rich-receipt gate is NOT passed**. This is **onboarding/update evidence**
+  (stale-runtime vs pinned-config drift; an MCP-CLI/update lane concern),
+  reported apart from the Spark/Charge reading. No resend.
