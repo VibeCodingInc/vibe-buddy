@@ -81,3 +81,69 @@ scanning · cross-machine sync state · confidence scores · any Mind activity
 outside a composing/threshold moment · dashboards, memory tabs, insight
 feeds, suggestion streams (banned destinations) · and the Mind itself as a
 nameable UI object — it has no icon, no screen, no brand. Only its one line.
+
+---
+
+## ADDENDUM — what the live call taught the lane (2026-08-24, wcj-odpo-wrb)
+
+### 1 · The call artifact already exists — as untappable plain text
+The real crossing from /vibe → vibeconf today is a DM someone types by hand:
+
+```
+join me: https://meet.google.com/cms-bott-tyz
+to bring your agent, paste this into the session you are working in:
+/join-call cms-bott-tyz
+```
+
+That is the "served call artifact" canon allows ("synchronous escalation
+belongs to vibeconf; a conversation may carry a served call artifact") —
+except in Buddy and on iOS it renders as a wall of text with a raw URL and a
+command you must select by hand on a phone.
+
+**Canon-safe slice (no cross-lane contract needed):** a message whose text
+CONTAINS a meet code is a FACT IN THE TEXT, not an inference. Render it as a
+two-affordance artifact inside the message:
+- **join the room** (opens the link — human crossing)
+- **bring your agent** (copies the `/join-call <code>` line — the agent crossing)
+
+Hard limits until vibeconf serves truth: **no liveness claim** ("call is
+live", participant counts, "3 people waiting" all require served state we do
+not have), **no invite-to-call action** (the coordinator's explicit hold),
+and the artifact is presentation only — it never joins anything itself.
+This is S2 scope, sits beside the reply needle, and reuses the same law:
+render served/textual facts, never inferred state.
+
+### 2 · The ephemeral-bot model is real, and it reframes "who is in a thread"
+A BUDDY profile was created mid-call in seconds (`VIBECONF_PROFILE=… open -na
+Vibeconferencing --args --profile=… --bot-name=… --meet-url=…`), and
+adopt-session-as-bot shipped in app 0.8.41. Consequence for this lane's
+"human / agent / automated actors remain legible" rule: the actor set is not
+a fixed roster — bots are created per-occasion. Legibility must come from
+SERVED actor provenance (contract gap #4), never from a client-side list of
+known agents, which would go stale the moment someone spins one up.
+
+### 3 · The failure mode we already fixed is endemic
+conferencing#517 is Build 67's disease in another lane: a pinned port that
+only one call rebinds, and **nothing errors** — BUDDY's words came out of
+Pepper's tile with every call returning OK. Same shape as the dead SSL pins
+(silent failure that looks healthy) and the SSE unread (a confident wrong
+number). The lane's standing rule earns another data point: **a subsystem
+that cannot fail loudly will fail invisibly for weeks.**
+
+### 4 · THE DEFECT THIS LANE OWNS — the interval door was closed
+Stan messaged Seth on /vibe ~20h before the call and Seth never saw it;
+Stan concluded "messaging is broken." It is not — **delivery worked, every
+notification path was down at once**:
+- **iPhone:** those messages landed ~1.5h BEFORE Build 67 was verified —
+  during the dead-SSL-pin window, when the app could not fetch at all.
+- **Buddy:** not running (still isn't) — the interval door only works while
+  the app is open, and nothing says so.
+- **Terminal:** the session-start hook surfaces waiting messages at session
+  START; a message arriving mid-session waits for the next one.
+- **Push:** `getPace`/`isActivelyReadingOnly` suppress DM pushes for an
+  "actively reading" or quiet-paced recipient (api/lib/push-notifications.js).
+
+Four doors, each assuming another caught it. **This is the pilot's single
+biggest risk**: invite five minds, and a reply that lands in a gap is a
+conversation that dies looking like disinterest. Cross-lane, so it needs
+routing rather than a unilateral fix — but the Buddy/iOS half is ours.
