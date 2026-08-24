@@ -162,25 +162,126 @@ function Invite() {
   );
 }
 
+// ── FOUNDER-LIVE MODE (?mind-proto=live&handle=X) ──────────────────────────
+// Consults the REAL local Mind at 127.0.0.1:7433 (loopback; CORS pinned to
+// this dev origin). Renders only what the Mind returns; persists nothing;
+// real data never enters the repo. Sending is not wired — approval here only
+// stages text for the human to carry into a real composer.
+import { useEffect, useRef, useState } from 'react';
+
+function LiveMind({ handle }: { handle: string }) {
+  // draft may be prefilled via ?draft= so headless capture can exercise the offer
+  const [draft, setDraft] = useState(new URLSearchParams(window.location.search).get('draft') || '');
+  const [offer, setOffer] = useState<any>(null);
+  const [threshold, setThreshold] = useState<any>(null);
+  const [sheet, setSheet] = useState(false);
+  const [status, setStatus] = useState('mind: idle');
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    fetch(`http://127.0.0.1:7433/?mode=threshold&handle=${encodeURIComponent(handle)}`)
+      .then(r => r.json()).then(j => setThreshold(j.silence ? null : j))
+      .catch(() => setStatus('mind: unreachable (start: python3 ~/.vibe/mind/mind.py --serve)'));
+  }, [handle]);
+
+  useEffect(() => {
+    if (draft.trim().length < 8) { setOffer(null); return; }
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      setStatus('mind: consulting…');
+      const t0 = performance.now();
+      fetch(`http://127.0.0.1:7433/?mode=pass&handle=${encodeURIComponent(handle)}&draft=${encodeURIComponent(draft)}`)
+        .then(r => r.json())
+        .then(j => {
+          setStatus(`mind: ${j.silence ? 'silence' : 'one connection'} · ${j.latency}s retrieval · ${Math.round(performance.now() - t0)}ms round-trip`);
+          setOffer(j.silence ? null : j);
+        })
+        .catch(() => setStatus('mind: unreachable'));
+    }, 700);
+  }, [draft, handle]);
+
+  return (
+    <div style={{ ...S.frame, position: 'relative' as const }}>
+      <div style={S.header}>
+        <span style={{ color: T.faint }}>○</span>
+        <span>@{handle}</span>
+        <span style={{ color: T.faint, fontSize: 11 }}>founder-live · loopback mind</span>
+      </div>
+      {threshold && (
+        <div style={{ padding: '8px 14px', borderBottom: `1px solid ${T.line}`, color: T.dim, fontSize: 12 }}>
+          {threshold.line}
+          <span style={{ color: T.faint, fontSize: 10, marginLeft: 6 }}>{threshold.source} · {threshold.freshness}</span>
+        </div>
+      )}
+      <div style={{ ...S.msgs, color: T.faint, fontSize: 12 }}>
+        (live mode renders no thread — the wire stays in real clients; this window tests ONLY the mind)
+      </div>
+      <div style={S.composerWrap}>
+        {offer && (
+          <div style={S.mindLine}>
+            <span style={{ cursor: 'pointer' }} onClick={() => setSheet(true)}>{offer.offer_line}</span>
+            <span style={S.x} onClick={() => setOffer(null)}>✕</span>
+          </div>
+        )}
+        <div style={S.input}>
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder={`Message @${handle}…`}
+            style={{ flex: 1, background: 'none', border: 'none', outline: 'none', color: T.ink, fontFamily: T.mono, fontSize: 13, resize: 'none' as const, minHeight: 20 }}
+          />
+          <button style={S.send} title="not wired in live mode">send</button>
+        </div>
+        <div style={{ color: T.faint, fontSize: 10, marginTop: 6 }}>{status} · sending never waits for the mind</div>
+      </div>
+      {sheet && offer && (
+        <div style={{ position: 'absolute' as const, inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'flex-end' }} onClick={() => setSheet(false)}>
+          <div style={{ width: '100%', background: T.panel, borderTop: `1px solid ${T.blue}`, padding: 16, fontSize: 12.5 }} onClick={e => e.stopPropagation()}>
+            <div style={{ color: T.dim, marginBottom: 10 }}>Add what you {offer.offer_line?.startsWith('You noted') ? 'noted' : 'wrote'} to this message?</div>
+            <div style={{ border: `1px solid ${T.line}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+              <div style={{ color: T.ink, whiteSpace: 'pre-wrap' }}>&ldquo;{offer.quote}&rdquo;</div>
+              <div style={{ color: T.faint, fontSize: 10.5, marginTop: 6 }}>
+                {offer.source}:{offer.source_line} · as of {offer.freshness} · {offer.why} · your agent&rsquo;s retrieval
+              </div>
+            </div>
+            <div style={{ color: T.dim, margin: '10px 0 6px' }}>Exactly this would be added:</div>
+            <div style={{ border: `1px solid ${T.line}`, borderRadius: 8, padding: 10, color: T.ink, whiteSpace: 'pre-wrap' }}>{offer.proposed_prose}</div>
+            {(offer.contradictions || []).map((c: string, i: number) => (
+              <div key={i} style={{ color: T.dim, fontSize: 11, marginTop: 8 }}>⚠ {c}</div>
+            ))}
+            <div style={{ color: T.faint, fontSize: 10.5, margin: '8px 0 12px' }}>nothing sends from this window · copy into a real composer to use it</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button style={{ ...S.send, padding: '8px 14px' }} onClick={() => { navigator.clipboard.writeText(offer.proposed_prose); setSheet(false); }}>copy &amp; review</button>
+              <button style={{ ...S.send, color: T.faint, padding: '8px 14px' }} onClick={() => { setSheet(false); setOffer(null); }}>don&rsquo;t add</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function MindPrototype() {
-  const state = new URLSearchParams(window.location.search).get('mind-proto') || 'quiet';
+  const q = new URLSearchParams(window.location.search);
+  const state = q.get('mind-proto') || 'quiet';
+  const inner = state === 'live'
+    ? <LiveMind handle={q.get('handle') || 'wanderingstan'} />
+    : state === 'invite'
+      ? <div style={{ ...S.frame, position: 'relative' as const }}><Invite /></div>
+      : (
+        <div style={{ ...S.frame, position: 'relative' as const }}>
+          <Header note={state === 'threshold' ? FIX.threshold : undefined} />
+          <Thread />
+          <Composer
+            typed={state === 'offer' || state === 'sheet' ? 'plates, and here\u2019s why \u2014' : undefined}
+            offer={state === 'offer' || state === 'sheet'}
+          />
+          {state === 'sheet' && <Sheet />}
+        </div>
+      );
   return (
     <div style={{ background: '#000', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ ...S.frame, position: 'relative' as const }}>
-        {state === 'invite' ? (
-          <Invite />
-        ) : (
-          <>
-            <Header note={state === 'threshold' ? FIX.threshold : undefined} />
-            <Thread />
-            <Composer
-              typed={state === 'offer' || state === 'sheet' ? 'plates, and here’s why —' : undefined}
-              offer={state === 'offer' || state === 'sheet'}
-            />
-            {state === 'sheet' && <Sheet />}
-          </>
-        )}
-      </div>
+      {inner}
     </div>
   );
 }
