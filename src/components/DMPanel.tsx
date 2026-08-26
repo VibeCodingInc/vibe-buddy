@@ -984,15 +984,42 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         <div style={{ padding: '8px 12px', borderTop: `1px solid ${color.line}`, flexShrink: 0, fontSize: 12 }}>
           {mindOffer.offer_kind === 'aperture' ? (
             <>
-              <div style={{ color: color.dim, marginBottom: 6 }}>
-                {mindOffer.aperture?.shown_to_seth_only?.exact_words}
+              {/* PRIVATE TO YOU: consult-only prevents direct crossing — it
+                  does not prevent the OWNER from seeing the insight. The
+                  facet renders in full; only the quote may not travel. */}
+              <div style={{ color: color.faint, fontSize: 10, letterSpacing: '0.04em', marginBottom: 4 }}>
+                PRIVATE TO YOU — this may not cross as written
+              </div>
+              {mindOffer.facet && (
+                <div style={{ color: color.ink, marginBottom: 6 }}>{mindOffer.facet}</div>
+              )}
+              {mindOffer.why_rotates && (
+                <div style={{ color: color.dim, marginBottom: 6 }}>{mindOffer.why_rotates}</div>
+              )}
+              <div style={{ color: color.dim, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
+                “{mindOffer.aperture?.shown_to_seth_only?.exact_words}”
               </div>
               <div style={{ color: color.faint, fontSize: 10.5 }}>
-                {mindOffer.aperture?.shown_to_seth_only?.source} · {mindOffer.aperture?.shown_to_seth_only?.freshness} ·{' '}
+                {mindOffer.attribution ? `${mindOffer.attribution} · ` : ''}
+                {mindOffer.aperture?.shown_to_seth_only?.source || mindOffer.source} ·{' '}
+                {mindOffer.aperture?.shown_to_seth_only?.freshness || mindOffer.content_date} ·{' '}
                 {mindOffer.disclosure_reason}
               </div>
-              <div style={{ color: color.faint, fontSize: 10.5, marginTop: 4 }}>
-                consult-only — say it in your own words if it should cross; these words are never auto-inserted
+              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+                <span
+                  style={{ color: color.blue, cursor: 'pointer' }}
+                  onClick={() => {
+                    // "say it in my words": seeds the draft with a PROMPT to
+                    // author the facet, never with the withheld quote.
+                    setInput((cur) => cur.trimEnd());
+                    setMindReveal(false);
+                  }}
+                >
+                  say it in my words
+                </span>
+                <span style={{ color: color.faint, cursor: 'pointer' }} onClick={() => setMindReveal(false)}>
+                  close
+                </span>
               </div>
             </>
           ) : (
