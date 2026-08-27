@@ -29,7 +29,7 @@ describe('private Mind priming cache', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('dedupes the same context, refreshes changed context, and expires after 15 minutes', async () => {
+  it('dedupes the same context, refreshes changed context, and expires after the session TTL', async () => {
     const mind = await import('../src/lib/mindClient');
     mind.primeMind('friend', 'first served message');
     await settle();
@@ -45,7 +45,9 @@ describe('private Mind priming cache', () => {
     await settle();
     expect(invokeMock).toHaveBeenCalledTimes(2);
 
-    vi.advanceTimersByTime(15 * 60_000 + 1);
+    // The TTL is the retention backstop for a WORKING SESSION (2h), not a
+    // coffee break — freshness is owned by the fingerprint above.
+    vi.advanceTimersByTime(2 * 60 * 60_000 + 1);
     mind.primeMind('friend', 'first served message\na newly arrived turn');
     await settle();
     expect(invokeMock).toHaveBeenCalledTimes(3);

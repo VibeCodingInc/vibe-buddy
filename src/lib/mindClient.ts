@@ -77,7 +77,12 @@ export function tensionFingerprint(handle: string, draft: string): string {
 }
 
 let inFlight: AbortController | null = null;
-const PRIME_TTL_MS = 15 * 60_000;
+// A working session, not a coffee break: the set costs ~100s to build, and
+// freshness is owned by the context fingerprint (a new message re-primes
+// regardless), so this is purely the retention backstop for the in-memory
+// pool. 15 minutes expired mid-read and silently pushed real passes onto
+// the cold path. Matches the Studio runtime.
+const PRIME_TTL_MS = 2 * 60 * 60_000;
 const primedFor = new Map<string, { fingerprint: string; expiresAt: number }>();
 const primingFor = new Map<string, string>();
 
