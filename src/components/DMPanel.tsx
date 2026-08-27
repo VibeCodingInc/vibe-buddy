@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { askMind, isFounderMind, looksConsequential, primeMind, tensionFingerprint } from '../lib/mindClient';
+import { askMind, isFounderMind, looksConsequential, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
 import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
@@ -207,6 +207,8 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const [mindOffer, setMindOffer] = useState<MindFacet | null>(null);
   const [mindOfferFp, setMindOfferFp] = useState('');
   const [mindReveal, setMindReveal] = useState(false);
+  const privateMindDetail =
+    mindOffer?.aperture?.shown_to_owner_only ?? mindOffer?.aperture?.shown_to_seth_only;
   const mindAskTimer = useRef<number | undefined>(undefined);
   const mindDismissedFp = useRef<Set<string>>(new Set());
   // ── RETURN ("what changed?") ─────────────────────────────────────────
@@ -214,22 +216,23 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // is actually taken into a draft, asked ONCE after that draft is sent,
   // and answerable in one line or dismissed forever. It records nothing
   // anywhere else and never becomes a task list.
-  const [returnArmed, setReturnArmed] = useState(false);
+  const [returnArmed, setReturnArmed] = useState<string | null>(null);
   const [returnAsk, setReturnAsk] = useState(false);
-  const [returnNote, setReturnNote] = useState('');
   // THREAD-OPEN PRIMING — invisible. Builds the working set for THIS
   // relationship (who this is, what was recently said) while the human is
   // still reading, so an offer can arrive in seconds rather than a minute.
   // Renders nothing; a failure is silence, exactly like every other Mind path.
   useEffect(() => {
-    if (!isFounderMind()) return;
+    if (!isFounderMind() || messages.length === 0) return;
     const recent = messages
       .slice(-8)
       .map((m) => `${m.from === handle ? 'me' : '@' + chatWith}: ${m.content}`)
       .join('\n');
     primeMind(chatWith, `a conversation with @${chatWith}\n${recent}`.slice(0, 2000));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatWith, messages.length > 0]);
+  }, [chatWith, handle, messages]);
+  useEffect(() => {
+    if (returnArmed && !input.includes(returnArmed)) setReturnArmed(null);
+  }, [input, returnArmed]);
   useEffect(() => {
     if (!isFounderMind()) return;
     window.clearTimeout(mindAskTimer.current);
@@ -386,6 +389,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     // without the link" recovery from invalid_reply_target) sends bare
     // regardless of any currently-composed target.
     const replyTarget = forceUnlinked ? null : replyingTo;
+    const facetCrosses = Boolean(returnArmed && msg.includes(returnArmed));
+    // A Return is bound to this exact send attempt, never to a later message.
+    // Failed sends do not carry the arm forward into unrelated prose.
+    setReturnArmed(null);
     const optimisticId = `local_${Date.now()}`;
     setSending(true);
     setInput('');
@@ -415,8 +422,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setPollArmed(true);
       // The facet crossed for real. Ask what changed — once, quietly, and
       // only after the words actually left.
-      if (returnArmed) {
-        setReturnArmed(false);
+      if (facetCrosses) {
         setReturnAsk(true);
       }
     }
@@ -995,33 +1001,24 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       {returnAsk && (
         <div style={{ padding: '6px 12px 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
-            <span style={{ color: color.dim, whiteSpace: 'nowrap' }}>what changed?</span>
-            <input
-              value={returnNote}
-              onChange={(e) => setReturnNote(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && returnNote.trim()) {
-                  // Returned into the human's own hands: the note belongs to
-                  // whatever authority owns the work, and only they know
-                  // which that is. Buddy does not file it anywhere.
-                  console.info('[return] what changed:', returnNote.trim());
-                  setReturnNote('');
-                  setReturnAsk(false);
-                }
-                if (e.key === 'Escape') { setReturnNote(''); setReturnAsk(false); }
-              }}
-              placeholder="a decision, a doc, a design — or nothing yet"
-              style={{
-                flex: 1, background: 'transparent', border: 'none', outline: 'none',
-                color: color.ink, fontSize: 12, fontFamily: 'inherit',
-              }}
-            />
+            <span style={{ color: color.dim }}>what changed in the work?</span>
             <span
-              style={{ color: color.faint, cursor: 'pointer' }}
-              onClick={() => { setReturnNote(''); setReturnAsk(false); }}
+              style={{
+                flex: 1,
+                color: color.faint,
+                fontSize: 11,
+              }}
+            >
+              make the change where that work lives
+            </span>
+            <button
+              type="button"
+              aria-label="Dismiss the return question"
+              style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, font: 'inherit' }}
+              onClick={() => setReturnAsk(false)}
             >
               ✕
-            </span>
+            </button>
           </div>
         </div>
       )}
@@ -1029,11 +1026,18 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       {mindOffer && !mindOffer.silence && (
         <div style={{ padding: '4px 12px 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, color: color.dim }}>
-            <span style={{ cursor: 'pointer' }} onClick={() => setMindReveal(true)}>
-              {mindOffer.line || 'your own material bears on this · see? ›'}
-            </span>
-            <span
-              style={{ marginLeft: 'auto', color: color.faint, cursor: 'pointer' }}
+            <button
+              type="button"
+              aria-label="Inspect the private source and proposed prose"
+              style={{ cursor: 'pointer', color: 'inherit', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
+              onClick={() => setMindReveal(true)}
+            >
+              {retrievalFactLine(mindOffer)}
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss this private source"
+              style={{ marginLeft: 'auto', color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
               onClick={() => {
                 mindDismissedFp.current.add(mindOfferFp);
                 setMindOffer(null);
@@ -1041,7 +1045,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               }}
             >
               ✕
-            </span>
+            </button>
           </div>
         </div>
       )}
@@ -1062,17 +1066,18 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                 <div style={{ color: color.dim, marginBottom: 6 }}>{mindOffer.why_rotates}</div>
               )}
               <div style={{ color: color.dim, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
-                “{mindOffer.aperture?.shown_to_seth_only?.exact_words}”
+                “{privateMindDetail?.exact_words}”
               </div>
               <div style={{ color: color.faint, fontSize: 10.5 }}>
                 {mindOffer.attribution ? `${mindOffer.attribution} · ` : ''}
-                {mindOffer.aperture?.shown_to_seth_only?.source || mindOffer.source} ·{' '}
-                {mindOffer.aperture?.shown_to_seth_only?.freshness || mindOffer.content_date} ·{' '}
+                {privateMindDetail?.source || mindOffer.source} ·{' '}
+                {privateMindDetail?.freshness || mindOffer.content_date} ·{' '}
                 {mindOffer.disclosure_reason}
               </div>
               <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-                <span
-                  style={{ color: color.blue, cursor: 'pointer' }}
+                <button
+                  type="button"
+                  style={{ color: color.blue, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
                   onClick={() => {
                     // "say it in my words": seeds the draft with a PROMPT to
                     // author the facet, never with the withheld quote.
@@ -1081,10 +1086,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                   }}
                 >
                   say it in my words
-                </span>
-                <span style={{ color: color.faint, cursor: 'pointer' }} onClick={() => setMindReveal(false)}>
+                </button>
+                <button type="button" style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }} onClick={() => setMindReveal(false)}>
                   close
-                </span>
+                </button>
               </div>
             </>
           ) : (
@@ -1103,25 +1108,27 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                 {mindOffer.caveat ? ` · ${mindOffer.caveat}` : ''}
               </div>
               <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-                <span
-                  style={{ color: color.blue, cursor: 'pointer' }}
+                <button
+                  type="button"
+                  style={{ color: color.blue, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
                   onClick={() => {
                     // add & review: appends to the DRAFT for the human to
                     // edit and send. The Mind never sends.
-                    setInput((cur) => (cur.trimEnd() + '\n\n' + (mindOffer.proposed_prose || mindOffer.quote || '')).trim());
+                    const candidate = mindOffer.proposed_prose || mindOffer.quote || '';
+                    setInput((cur) => (cur.trimEnd() + '\n\n' + candidate).trim());
                     setMindReveal(false);
                     setMindOffer(null);
                     // A facet that crossed is a loop still open: the exchange
                     // is only worth anything if some real work changed. Arm
                     // the Return prompt for after this is actually sent.
-                    setReturnArmed(true);
+                    setReturnArmed(candidate || null);
                   }}
                 >
                   add &amp; review
-                </span>
-                <span style={{ color: color.faint, cursor: 'pointer' }} onClick={() => setMindReveal(false)}>
+                </button>
+                <button type="button" style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }} onClick={() => setMindReveal(false)}>
                   close
-                </span>
+                </button>
               </div>
             </>
           )}

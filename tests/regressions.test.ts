@@ -2643,9 +2643,16 @@ describe('the send box never names a transport (Telegram test)', () => {
     // Anchored on the composer block's own opening condition — the thread
     // HEADER now also reads reachability (buddy#53 served words), so the
     // first bare occurrence of the enum is no longer this block.
+    const warningStart = src.indexOf(
+      "(them?.reachability === 'broadcast-only' || (them ? hasNoReadEvidence(them) : false))",
+    );
+    // Stop at the end of the warning itself. The old slice ran through the
+    // entire composer and interpreted unrelated later conditionals as a
+    // warning fallback — a static guard proving the shape of adjacent UI,
+    // not the contract it names.
     const compose = src.slice(
-      src.indexOf("(them?.reachability === 'broadcast-only' || (them ? hasNoReadEvidence(them) : false))"),
-      src.indexOf('placeholder={`Message'),
+      warningStart,
+      src.indexOf('{/* ── FOUNDER MIND', warningStart),
     );
     expect(compose.length).toBeGreaterThan(200);
     // Comments are stripped first: the ban is on what RENDERS, and the

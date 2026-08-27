@@ -11,12 +11,11 @@
  *   · one source-honest line or nothing
  *   · the Mind never sends
  *
- * Founder gating: activates only when VITE_MIND_URL + VITE_MIND_TOKEN are
- * present at build time (Seth's dev environment). Production builds carry
- * no Mind code path — both env vars are absent, isFounderMind() is false,
- * and the dynamic checks keep every call unreachable. No platform proxying:
- * the call goes straight from Buddy to the Studio over Seth's private
- * Tailscale path.
+ * Current founder gating: activates only when VITE_MIND_URL +
+ * VITE_MIND_TOKEN are present at build time. The code path still exists in
+ * ordinary bundles but stays inert without both values. Moving the bearer
+ * behind a native, runtime-local entitlement is a required review gate; this
+ * file does not claim the build-time value is secret.
  */
 
 export interface MindFacet {
@@ -39,6 +38,14 @@ export interface MindFacet {
   disclosure?: string;
   disclosure_reason?: string;
   aperture?: {
+    shown_to_owner_only?: {
+      exact_words?: string;
+      source?: string;
+      freshness?: string;
+      sensitivity?: string;
+    };
+    // Transitional compatibility with the founder-local runtime. The UI
+    // normalizes this to owner-neutral language and never emits this field.
     shown_to_seth_only?: {
       exact_words?: string;
       source?: string;
@@ -51,8 +58,8 @@ export interface MindFacet {
   stopped_at?: string;
 }
 
-const MIND_URL = (import.meta as any).env?.VITE_MIND_URL as string | undefined;
-const MIND_TOKEN = (import.meta as any).env?.VITE_MIND_TOKEN as string | undefined;
+const MIND_URL = import.meta.env.VITE_MIND_URL as string | undefined;
+const MIND_TOKEN = import.meta.env.VITE_MIND_TOKEN as string | undefined;
 
 export function isFounderMind(): boolean {
   return Boolean(MIND_URL && MIND_TOKEN);
@@ -76,7 +83,23 @@ export function tensionFingerprint(handle: string, draft: string): string {
 }
 
 let inFlight: AbortController | null = null;
-const primedFor = new Set<string>();
+const PRIME_TTL_MS = 15 * 60_000;
+const primedFor = new Map<string, { fingerprint: string; expiresAt: number }>();
+const primingFor = new Map<string, string>();
+
+export function contextFingerprint(handle: string, context: string): string {
+  return tensionFingerprint(handle, context);
+}
+
+export function retrievalFactLine(facet: MindFacet): string {
+  const privateDetail =
+    facet.aperture?.shown_to_owner_only ?? facet.aperture?.shown_to_seth_only;
+  const source = privateDetail?.source ?? facet.source;
+  const date = privateDetail?.freshness ?? facet.content_date;
+  const parts = source?.split('/').filter(Boolean) ?? [];
+  const leaf = parts.length > 0 ? parts[parts.length - 1] : undefined;
+  return `${leaf ? `from ${leaf}` : 'from your private sources'}${date ? ` · ${date}` : ''} · see ›`;
+}
 
 /**
  * Thread-open priming. Builds an ephemeral working set for THIS relationship
@@ -88,16 +111,40 @@ const primedFor = new Set<string>();
  * Fire-and-forget by design. If it fails, the composer still works; the Mind
  * simply falls back to the slow path.
  */
-export function primeMind(handle: string, context: string): void {
-  if (!isFounderMind() || primedFor.has(handle)) return;
-  primedFor.add(handle);
+export function primeMind(handle: string, context: string, now = Date.now()): void {
+  const normalized = context.trim();
+  if (!isFounderMind() || !normalized) return;
+  const fingerprint = contextFingerprint(handle, normalized);
+  const current = primedFor.get(handle);
+  if (current?.fingerprint === fingerprint && current.expiresAt > now) return;
+  if (primingFor.get(handle) === fingerprint) return;
+  primingFor.set(handle, fingerprint);
   void fetch(`${MIND_URL}/prime`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MIND_TOKEN}` },
-    body: JSON.stringify({ handle, context }),
-  }).catch(() => {
-    primedFor.delete(handle); // a failed prime may be retried on next open
-  });
+    body: JSON.stringify({ handle, context: normalized }),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error('prime refused');
+      if (primingFor.get(handle) === fingerprint) {
+        primedFor.set(handle, {
+          fingerprint,
+          expiresAt: Date.now() + PRIME_TTL_MS,
+        });
+      }
+    })
+    .catch(() => {
+      // A failed prime remains retryable. The composer never renders the
+      // failure and never waits for it.
+    })
+    .finally(() => {
+      if (primingFor.get(handle) === fingerprint) primingFor.delete(handle);
+    });
+}
+
+export function resetMindPrimeCacheForTests(): void {
+  primedFor.clear();
+  primingFor.clear();
 }
 
 /**

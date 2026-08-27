@@ -30,9 +30,15 @@ const memStore = new Map<string, string>();
 
 // Founder gate open; network edge controllable; gating helpers REAL.
 const askMindMock = vi.hoisted(() => vi.fn());
+const primeMindMock = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/mindClient', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
-  return { ...real, isFounderMind: () => true, askMind: askMindMock };
+  return {
+    ...real,
+    isFounderMind: () => true,
+    askMind: askMindMock,
+    primeMind: primeMindMock,
+  };
 });
 
 import DMPanel from '../src/components/DMPanel';
@@ -70,18 +76,23 @@ let pendingAsks: Array<{
   draft: string;
   resolve: (v: { facet: MindFacet; fingerprint: string } | null) => void;
 }> = [];
+let incoming: ((messages: VibeMessage[]) => void) | null = null;
 
 beforeEach(() => {
   vi.useFakeTimers();
   sent = [];
   pendingAsks = [];
   askMindMock.mockReset();
+  primeMindMock.mockReset();
+  incoming = null;
   askMindMock.mockImplementation(
     (handle: string, draft: string) =>
       new Promise((resolve) => { pendingAsks.push({ handle, draft, resolve }); })
   );
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
-  vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
+  vi.spyOn(realtime, 'openDM').mockImplementation((_peer, callback) => {
+    incoming = callback;
+  });
   vi.spyOn(realtime, 'goBackground').mockImplementation(() => {});
   vi.spyOn(realtime, 'setTypingCallback').mockImplementation(() => {});
   vi.spyOn(realtime, 'setMessageEvidenceCallback').mockImplementation(() => {});
@@ -118,7 +129,37 @@ const answer = (i = 0, facet = FACET) =>
     a.resolve({ facet, fingerprint: tensionFingerprint(a.handle, a.draft) });
     await Promise.resolve();
   });
-const offerLine = () => screen.queryByText(/see\? ›/);
+const offerLine = () => screen.queryByText(/see ›/);
+
+describe('thread-open priming uses real relationship context', () => {
+  const msg = (id: string, content: string): VibeMessage => ({
+    id,
+    from: THEM,
+    to: ME,
+    content,
+    timestamp: new Date().toISOString(),
+    status: 'sent',
+  });
+
+  it('does not prime an empty/loading thread, then primes when messages arrive', async () => {
+    mount();
+    expect(primeMindMock).not.toHaveBeenCalled();
+    await act(async () => incoming?.([msg('m1', 'the actual relationship context')]));
+    expect(primeMindMock).toHaveBeenCalledTimes(1);
+    expect(primeMindMock.mock.calls[0][1]).toContain('the actual relationship context');
+  });
+
+  it('newly arrived messages refresh the relationship context', async () => {
+    mount(THEM, [msg('m1', 'first context')]);
+    expect(primeMindMock).toHaveBeenCalledTimes(1);
+    await act(async () => incoming?.([
+      msg('m1', 'first context'),
+      msg('m2', 'a new turn changes the tension'),
+    ]));
+    expect(primeMindMock).toHaveBeenCalledTimes(2);
+    expect(primeMindMock.mock.calls[1][1]).toContain('a new turn changes the tension');
+  });
+});
 
 describe('clause 1 — a fast send never wakes the Mind', () => {
   it('send before 2.5s: zero requests, message goes instantly', async () => {
@@ -213,6 +254,10 @@ describe('clause 3 — the discard rule (stale results die silently)', () => {
     tick(2500);
     await answer(0);
     expect(offerLine()).not.toBeNull();
+    expect(screen.getByText(/from synthetic-note\.md/)).toBeTruthy();
+    // The runtime's persuasive relevance line is not a fact the collapsed
+    // UI may repeat. Relevance remains visibly labeled inside the reveal.
+    expect(screen.queryByText('your own material bears on this · see? ›')).toBeNull();
   });
 });
 
@@ -293,7 +338,7 @@ describe('RETURN — "what changed?" asks once, after the facet actually crossed
     fireEvent.click(offerLine()!);
     fireEvent.click(screen.getByText('add & review'));
   };
-  const returnPrompt = () => screen.queryByText('what changed?');
+  const returnPrompt = () => screen.queryByText('what changed in the work?');
 
   it('an ordinary send never asks', async () => {
     mount();
@@ -328,7 +373,7 @@ describe('RETURN — "what changed?" asks once, after the facet actually crossed
     await takeFacetIntoDraft();
     pressSend();
     await flush();
-    fireEvent.keyDown(screen.getByPlaceholderText(/a decision, a doc/), { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss the return question' }));
     expect(returnPrompt()).toBeNull();
     type('an ordinary follow-up message with no facet in it at all');
     pressSend();
@@ -336,17 +381,32 @@ describe('RETURN — "what changed?" asks once, after the facet actually crossed
     expect(returnPrompt()).toBeNull();
   });
 
-  it('the answer never crosses the wire', async () => {
+  it('deleting the inserted facet before send does not claim a Return', async () => {
+    mount();
+    await takeFacetIntoDraft();
+    type(TENSE);
+    pressSend();
+    await flush();
+    expect(returnPrompt()).toBeNull();
+  });
+
+  it('replacing the draft with unrelated prose does not claim the facet crossed', async () => {
+    mount();
+    await takeFacetIntoDraft();
+    type('a completely different ordinary message that contains none of the proposed words');
+    pressSend();
+    await flush();
+    expect(returnPrompt()).toBeNull();
+  });
+
+  it('Return is a local nudge, not a fake submission or private log sink', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
     mount();
     await takeFacetIntoDraft();
     pressSend();
     await flush();
-    const before = sent.length;
-    const box = screen.getByPlaceholderText(/a decision, a doc/);
-    fireEvent.change(box, { target: { value: 'rewrote the launch section' } });
-    fireEvent.keyDown(box, { key: 'Enter' });
-    expect(sent).toHaveLength(before); // it is the human's note, not a message
-    expect(JSON.stringify(sent)).not.toContain('rewrote the launch section');
-    expect(returnPrompt()).toBeNull();
+    expect(returnPrompt()).not.toBeNull();
+    expect(screen.queryByPlaceholderText(/decision, a doc/)).toBeNull();
+    expect(log).not.toHaveBeenCalled();
   });
 });
