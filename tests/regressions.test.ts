@@ -2644,7 +2644,7 @@ describe('the send box never names a transport (Telegram test)', () => {
     // HEADER now also reads reachability (buddy#53 served words), so the
     // first bare occurrence of the enum is no longer this block.
     const warningStart = src.indexOf(
-      "(them?.reachability === 'broadcast-only' || (them ? hasNoReadEvidence(them) : false))",
+      "(them?.reachability === 'broadcast-only' || Boolean(them && hasNoReadEvidence(them)))",
     );
     // Stop at the end of the warning itself. The old slice ran through the
     // entire composer and interpreted unrelated later conditionals as a
@@ -2652,7 +2652,7 @@ describe('the send box never names a transport (Telegram test)', () => {
     // not the contract it names.
     const compose = src.slice(
       warningStart,
-      src.indexOf('{/* ── FOUNDER MIND', warningStart),
+      src.indexOf('{/* ── PRIVATE MIND', warningStart),
     );
     expect(compose.length).toBeGreaterThan(200);
     // Comments are stripped first: the ban is on what RENDERS, and the

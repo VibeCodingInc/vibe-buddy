@@ -12,7 +12,7 @@
 //   5. dismiss forgets that exact tension permanently; discard crosses nothing
 //
 // The real gating helpers (looksConsequential, tensionFingerprint) run
-// unmocked; only the network edge (askMind) and the founder gate are stubbed,
+// unmocked; only the native Mind edge (askMind) is stubbed,
 // so these tests exercise the production discard logic, not a copy of it.
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
@@ -28,14 +28,13 @@ const memStore = new Map<string, string>();
   get length() { return memStore.size; },
 };
 
-// Founder gate open; network edge controllable; gating helpers REAL.
+// Native edge controllable; gating helpers REAL.
 const askMindMock = vi.hoisted(() => vi.fn());
 const primeMindMock = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/mindClient', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
   return {
     ...real,
-    isFounderMind: () => true,
     askMind: askMindMock,
     primeMind: primeMindMock,
   };

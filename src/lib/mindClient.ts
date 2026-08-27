@@ -1,5 +1,5 @@
 /**
- * FOUNDER-ONLY Mind client — the Studio Mind behind the Buddy composer.
+ * Private Mind client — the Studio Mind behind the Buddy composer.
  *
  * The experience contract (slashvibe.dev): your private Mind → one approved
  * facet → one honest conversation. This client implements the sender-side
@@ -11,12 +11,13 @@
  *   · one source-honest line or nothing
  *   · the Mind never sends
  *
- * Current founder gating: activates only when VITE_MIND_URL +
- * VITE_MIND_TOKEN are present at build time. The code path still exists in
- * ordinary bundles but stays inert without both values. Moving the bearer
- * behind a native, runtime-local entitlement is a required review gate; this
- * file does not claim the build-time value is secret.
+ * The renderer never receives the destination or bearer. It gives the native
+ * boundary only the active draft or recent visible thread excerpt already on
+ * screen; native code calls the one allowlisted Tailnet Studio. Missing local
+ * entitlement, transport errors and refusals are all silence.
  */
+
+import { invoke } from '@tauri-apps/api/core';
 
 export interface MindFacet {
   silence: boolean;
@@ -56,13 +57,6 @@ export interface MindFacet {
   };
   latency?: number;
   stopped_at?: string;
-}
-
-const MIND_URL = import.meta.env.VITE_MIND_URL as string | undefined;
-const MIND_TOKEN = import.meta.env.VITE_MIND_TOKEN as string | undefined;
-
-export function isFounderMind(): boolean {
-  return Boolean(MIND_URL && MIND_TOKEN);
 }
 
 /** Tension pre-gate, mirrored from the runtime so we never spend a 40s
@@ -113,19 +107,15 @@ export function retrievalFactLine(facet: MindFacet): string {
  */
 export function primeMind(handle: string, context: string, now = Date.now()): void {
   const normalized = context.trim();
-  if (!isFounderMind() || !normalized) return;
+  if (!normalized) return;
   const fingerprint = contextFingerprint(handle, normalized);
   const current = primedFor.get(handle);
   if (current?.fingerprint === fingerprint && current.expiresAt > now) return;
   if (primingFor.get(handle) === fingerprint) return;
   primingFor.set(handle, fingerprint);
-  void fetch(`${MIND_URL}/prime`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MIND_TOKEN}` },
-    body: JSON.stringify({ handle, context: normalized }),
-  })
+  void invoke<unknown | null>('mind_prime', { handle, context: normalized })
     .then((res) => {
-      if (!res.ok) throw new Error('prime refused');
+      if (res === null) throw new Error('prime unavailable');
       if (primingFor.get(handle) === fingerprint) {
         primedFor.set(handle, {
           fingerprint,
@@ -157,7 +147,6 @@ export async function askMind(
   handle: string,
   draft: string
 ): Promise<{ facet: MindFacet; fingerprint: string } | null> {
-  if (!isFounderMind()) return null;
   // one request at a time; a newer ask supersedes the old one
   if (inFlight) inFlight.abort();
   const ctrl = new AbortController();
@@ -165,17 +154,13 @@ export async function askMind(
   const fingerprint = tensionFingerprint(handle, draft);
   const timer = setTimeout(() => ctrl.abort(), 90_000);
   try {
-    const res = await fetch(`${MIND_URL}/facet`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${MIND_TOKEN}`,
-      },
-      body: JSON.stringify({ handle, draft }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return null;
-    const facet = (await res.json()) as MindFacet;
+    const facet = await Promise.race([
+      invoke<MindFacet | null>('mind_facet', { handle, draft }),
+      new Promise<null>((resolve) => {
+        ctrl.signal.addEventListener('abort', () => resolve(null), { once: true });
+      }),
+    ]);
+    if (!facet) return null;
     return { facet, fingerprint };
   } catch {
     return null; // silence — never an error state in the composer

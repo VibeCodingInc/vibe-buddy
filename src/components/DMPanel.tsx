@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { askMind, isFounderMind, looksConsequential, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
+import { askMind, looksConsequential, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
 import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
@@ -200,7 +200,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
   const [sending, setSending] = useState(false);
-  // ── FOUNDER MIND (sender-side telepathy) ─────────────────────────────
+  // ── PRIVATE MIND (sender-side telepathy) ─────────────────────────────
   // One source-honest line or nothing. Never blocks send, never a spinner.
   // The Studio answers in 30–50s; the result renders ONLY if the same
   // draft-tension is still current at arrival — else discarded silently.
@@ -223,7 +223,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // still reading, so an offer can arrive in seconds rather than a minute.
   // Renders nothing; a failure is silence, exactly like every other Mind path.
   useEffect(() => {
-    if (!isFounderMind() || messages.length === 0) return;
+    if (messages.length === 0) return;
     const recent = messages
       .slice(-8)
       .map((m) => `${m.from === handle ? 'me' : '@' + chatWith}: ${m.content}`)
@@ -234,7 +234,6 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     if (returnArmed && !input.includes(returnArmed)) setReturnArmed(null);
   }, [input, returnArmed]);
   useEffect(() => {
-    if (!isFounderMind()) return;
     window.clearTimeout(mindAskTimer.current);
     // any edit that changes the tension clears a now-stale offer
     if (mindOffer && tensionFingerprint(chatWith, input) !== mindOfferFp) {
@@ -963,7 +962,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           answer that is not coming. Say so before they spend the effort, not
           after. Stated once, quietly, and it does not block sending — the
           message still queues for whenever the recipient starts reading. */}
-      {(them?.reachability === 'broadcast-only' || (them ? hasNoReadEvidence(them) : false)) && (
+      {(them?.reachability === 'broadcast-only' || Boolean(them && hasNoReadEvidence(them))) && (
         <div
           style={{
             padding: '6px 10px',
@@ -991,7 +990,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         </div>
       )}
 
-      {/* ── FOUNDER MIND: one source-honest line or nothing ─────────────
+      {/* ── PRIVATE MIND: one source-honest line or nothing ─────────────
           Sender-side telepathy. No spinner, no badge, no persona; sending
           never waits. Dismiss forgets this exact tension permanently. */}
       {/* ── RETURN: the only question that matters after a facet crosses ──
