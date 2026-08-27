@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { askMind, looksConsequential, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
+import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
 import { realtime } from '../lib/realtime';
@@ -198,6 +200,65 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
   const [sending, setSending] = useState(false);
+  // ── PRIVATE MIND (sender-side telepathy) ─────────────────────────────
+  // One source-honest line or nothing. Never blocks send, never a spinner.
+  // The Studio answers in 30–50s; the result renders ONLY if the same
+  // draft-tension is still current at arrival — else discarded silently.
+  const [mindOffer, setMindOffer] = useState<MindFacet | null>(null);
+  const [mindOfferFp, setMindOfferFp] = useState('');
+  const [mindReveal, setMindReveal] = useState(false);
+  const privateMindDetail =
+    mindOffer?.aperture?.shown_to_owner_only ?? mindOffer?.aperture?.shown_to_seth_only;
+  const mindAskTimer = useRef<number | undefined>(undefined);
+  const mindDismissedFp = useRef<Set<string>>(new Set());
+  // ── RETURN ("what changed?") ─────────────────────────────────────────
+  // The exchange is not the point; the changed work is. Armed when a facet
+  // is actually taken into a draft, asked ONCE after that draft is sent,
+  // and answerable in one line or dismissed forever. It records nothing
+  // anywhere else and never becomes a task list.
+  const [returnArmed, setReturnArmed] = useState<string | null>(null);
+  const [returnAsk, setReturnAsk] = useState(false);
+  // THREAD-OPEN PRIMING — invisible. Builds the working set for THIS
+  // relationship (who this is, what was recently said) while the human is
+  // still reading, so an offer can arrive in seconds rather than a minute.
+  // Renders nothing; a failure is silence, exactly like every other Mind path.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const recent = messages
+      .slice(-8)
+      .map((m) => `${m.from === handle ? 'me' : '@' + chatWith}: ${m.content}`)
+      .join('\n');
+    primeMind(chatWith, `a conversation with @${chatWith}\n${recent}`.slice(0, 2000));
+  }, [chatWith, handle, messages]);
+  useEffect(() => {
+    if (returnArmed && !input.includes(returnArmed)) setReturnArmed(null);
+  }, [input, returnArmed]);
+  useEffect(() => {
+    window.clearTimeout(mindAskTimer.current);
+    // any edit that changes the tension clears a now-stale offer
+    if (mindOffer && tensionFingerprint(chatWith, input) !== mindOfferFp) {
+      setMindOffer(null);
+      setMindReveal(false);
+    }
+    if (!looksConsequential(input)) return;
+    const fp = tensionFingerprint(chatWith, input);
+    if (mindDismissedFp.current.has(fp)) return; // dismissed = dismissed
+    mindAskTimer.current = window.setTimeout(() => {
+      void askMind(chatWith, input).then((res) => {
+        if (!res || res.facet.silence) return;
+        // THE DISCARD RULE: render only if this exact tension is current.
+        setInput((cur) => {
+          if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
+            setMindOffer(res.facet);
+            setMindOfferFp(res.fingerprint);
+          } // else: discarded silently — the human moved on
+          return cur;
+        });
+      });
+    }, 2500); // debounce: a pause in typing, not every keystroke
+    return () => window.clearTimeout(mindAskTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, chatWith]);
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -327,6 +388,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     // without the link" recovery from invalid_reply_target) sends bare
     // regardless of any currently-composed target.
     const replyTarget = forceUnlinked ? null : replyingTo;
+    const facetCrosses = Boolean(returnArmed && msg.includes(returnArmed));
+    // A Return is bound to this exact send attempt, never to a later message.
+    // Failed sends do not carry the arm forward into unrelated prose.
+    setReturnArmed(null);
     const optimisticId = `local_${Date.now()}`;
     setSending(true);
     setInput('');
@@ -354,6 +419,11 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       // and the receipt outlives this panel (codex r15 P2).
       realtime.recordStoredMessageWith(chatWith);
       setPollArmed(true);
+      // The facet crossed for real. Ask what changed — once, quietly, and
+      // only after the words actually left.
+      if (facetCrosses) {
+        setReturnAsk(true);
+      }
     }
     if (!result.ok) {
       setMessages((prev) =>
@@ -892,7 +962,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           answer that is not coming. Say so before they spend the effort, not
           after. Stated once, quietly, and it does not block sending — the
           message still queues for whenever the recipient starts reading. */}
-      {(them?.reachability === 'broadcast-only' || (them ? hasNoReadEvidence(them) : false)) && (
+      {(them?.reachability === 'broadcast-only' || Boolean(them && hasNoReadEvidence(them))) && (
         <div
           style={{
             padding: '6px 10px',
@@ -920,6 +990,149 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         </div>
       )}
 
+      {/* ── PRIVATE MIND: one source-honest line or nothing ─────────────
+          Sender-side telepathy. No spinner, no badge, no persona; sending
+          never waits. Dismiss forgets this exact tension permanently. */}
+      {/* ── RETURN: the only question that matters after a facet crosses ──
+          Not analytics, not a task, not a rating. One line, answerable or
+          dismissable, gone either way. The answer stays local to the human
+          who wrote it — nothing about it crosses the wire. */}
+      {returnAsk && (
+        <div style={{ padding: '6px 12px 0', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+            <span style={{ color: color.dim }}>what changed in the work?</span>
+            <span
+              style={{
+                flex: 1,
+                color: color.faint,
+                fontSize: 11,
+              }}
+            >
+              make the change where that work lives
+            </span>
+            <button
+              type="button"
+              aria-label="Dismiss the return question"
+              style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, font: 'inherit' }}
+              onClick={() => setReturnAsk(false)}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mindOffer && !mindOffer.silence && (
+        <div style={{ padding: '4px 12px 0', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, color: color.dim }}>
+            <button
+              type="button"
+              aria-label="Inspect the private source and proposed prose"
+              style={{ cursor: 'pointer', color: 'inherit', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
+              onClick={() => setMindReveal(true)}
+            >
+              {retrievalFactLine(mindOffer)}
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss this private source"
+              style={{ marginLeft: 'auto', color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
+              onClick={() => {
+                mindDismissedFp.current.add(mindOfferFp);
+                setMindOffer(null);
+                setMindReveal(false);
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+      {mindReveal && mindOffer && (
+        <div style={{ padding: '8px 12px', borderTop: `1px solid ${color.line}`, flexShrink: 0, fontSize: 12 }}>
+          {mindOffer.offer_kind === 'aperture' ? (
+            <>
+              {/* PRIVATE TO YOU: consult-only prevents direct crossing — it
+                  does not prevent the OWNER from seeing the insight. The
+                  facet renders in full; only the quote may not travel. */}
+              <div style={{ color: color.faint, fontSize: 10, letterSpacing: '0.04em', marginBottom: 4 }}>
+                PRIVATE TO YOU — this may not cross as written
+              </div>
+              {mindOffer.facet && (
+                <div style={{ color: color.ink, marginBottom: 6 }}>{mindOffer.facet}</div>
+              )}
+              {mindOffer.why_rotates && (
+                <div style={{ color: color.dim, marginBottom: 6 }}>{mindOffer.why_rotates}</div>
+              )}
+              <div style={{ color: color.dim, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
+                “{privateMindDetail?.exact_words}”
+              </div>
+              <div style={{ color: color.faint, fontSize: 10.5 }}>
+                {mindOffer.attribution ? `${mindOffer.attribution} · ` : ''}
+                {privateMindDetail?.source || mindOffer.source} ·{' '}
+                {privateMindDetail?.freshness || mindOffer.content_date} ·{' '}
+                {mindOffer.disclosure_reason}
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+                <button
+                  type="button"
+                  style={{ color: color.blue, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
+                  onClick={() => {
+                    // "say it in my words": seeds the draft with a PROMPT to
+                    // author the facet, never with the withheld quote.
+                    setInput((cur) => cur.trimEnd());
+                    setMindReveal(false);
+                  }}
+                >
+                  say it in my words
+                </button>
+                <button type="button" style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }} onClick={() => setMindReveal(false)}>
+                  close
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ color: color.ink, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
+                “{mindOffer.quote}”
+              </div>
+              <div style={{ color: color.faint, fontSize: 10.5 }}>
+                {mindOffer.attribution} · {mindOffer.content_date} · {mindOffer.source}
+              </div>
+              {mindOffer.why_rotates && (
+                <div style={{ color: color.dim, marginTop: 6 }}>{mindOffer.why_rotates}</div>
+              )}
+              <div style={{ color: color.faint, fontSize: 10.5, marginTop: 4 }}>
+                {mindOffer.labeled_inference || "your agent's inference that this relates — you judge"}
+                {mindOffer.caveat ? ` · ${mindOffer.caveat}` : ''}
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+                <button
+                  type="button"
+                  style={{ color: color.blue, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
+                  onClick={() => {
+                    // add & review: appends to the DRAFT for the human to
+                    // edit and send. The Mind never sends.
+                    const candidate = mindOffer.proposed_prose || mindOffer.quote || '';
+                    setInput((cur) => (cur.trimEnd() + '\n\n' + candidate).trim());
+                    setMindReveal(false);
+                    setMindOffer(null);
+                    // A facet that crossed is a loop still open: the exchange
+                    // is only worth anything if some real work changed. Arm
+                    // the Return prompt for after this is actually sent.
+                    setReturnArmed(candidate || null);
+                  }}
+                >
+                  add &amp; review
+                </button>
+                <button type="button" style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }} onClick={() => setMindReveal(false)}>
+                  close
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {/* Input — a 1–4 line textarea (joint critique on buddy#49). The
           single-line input made a newline UNAUTHORABLE from Buddy while the
           terminal and every agent sends structured text on the same thread.

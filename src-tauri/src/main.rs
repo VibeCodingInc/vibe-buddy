@@ -11,6 +11,7 @@ mod vibeconf;
 mod terminal;
 mod transcript;
 mod notify;
+mod mind;
 
 use auth::{AuthResult, AuthStatus};
 use context_extractor::CodingDNA;
@@ -607,6 +608,8 @@ fn main() {
             terminal::front_terminal_session,
             terminal::place_in_terminal_session,
             transcript::transcript_signal,
+            mind::mind_prime,
+            mind::mind_facet,
         ])
         .build(tauri::generate_context!())
         .expect("error while running vibe buddy")

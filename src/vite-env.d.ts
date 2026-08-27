@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  // No build-time secrets: Buddy ships credential-free (G8).
+  // No build-time secrets or private Mind destinations: Buddy's native
+  // boundary reads its runtime-local capability after launch.
 }
 
 interface ImportMeta {
