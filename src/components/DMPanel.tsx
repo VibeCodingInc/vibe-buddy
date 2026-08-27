@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { askMind, isFounderMind, looksConsequential, tensionFingerprint } from '../lib/mindClient';
+import { askMind, isFounderMind, looksConsequential, primeMind, tensionFingerprint } from '../lib/mindClient';
 import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
@@ -209,6 +209,19 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const [mindReveal, setMindReveal] = useState(false);
   const mindAskTimer = useRef<number | undefined>(undefined);
   const mindDismissedFp = useRef<Set<string>>(new Set());
+  // THREAD-OPEN PRIMING — invisible. Builds the working set for THIS
+  // relationship (who this is, what was recently said) while the human is
+  // still reading, so an offer can arrive in seconds rather than a minute.
+  // Renders nothing; a failure is silence, exactly like every other Mind path.
+  useEffect(() => {
+    if (!isFounderMind()) return;
+    const recent = messages
+      .slice(-8)
+      .map((m) => `${m.from === handle ? 'me' : '@' + chatWith}: ${m.content}`)
+      .join('\n');
+    primeMind(chatWith, `a conversation with @${chatWith}\n${recent}`.slice(0, 2000));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatWith, messages.length > 0]);
   useEffect(() => {
     if (!isFounderMind()) return;
     window.clearTimeout(mindAskTimer.current);

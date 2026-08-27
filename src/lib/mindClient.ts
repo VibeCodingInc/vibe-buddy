@@ -76,6 +76,29 @@ export function tensionFingerprint(handle: string, draft: string): string {
 }
 
 let inFlight: AbortController | null = null;
+const primedFor = new Set<string>();
+
+/**
+ * Thread-open priming. Builds an ephemeral working set for THIS relationship
+ * on the Mind side — lenses, retrieval, disclosure and pre-ranking — so that
+ * composing costs one small match instead of the whole pipeline. Shows
+ * nothing, sends nothing, and returns nothing the UI renders: the only
+ * observable effect is that the offer, if one ever comes, arrives in seconds.
+ *
+ * Fire-and-forget by design. If it fails, the composer still works; the Mind
+ * simply falls back to the slow path.
+ */
+export function primeMind(handle: string, context: string): void {
+  if (!isFounderMind() || primedFor.has(handle)) return;
+  primedFor.add(handle);
+  void fetch(`${MIND_URL}/prime`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MIND_TOKEN}` },
+    body: JSON.stringify({ handle, context }),
+  }).catch(() => {
+    primedFor.delete(handle); // a failed prime may be retried on next open
+  });
+}
 
 /**
  * Ask the Studio Mind for one facet. Resolves with the facet + the
