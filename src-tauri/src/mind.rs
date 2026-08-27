@@ -82,6 +82,15 @@ fn valid_handle(handle: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'@')
 }
 
+fn mind_client(route: MindRoute) -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(route.timeout())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()
+}
+
 fn request(route: MindRoute, handle: &str, text: &str) -> Option<Value> {
     if !valid_handle(handle) || text.trim().is_empty() {
         return None;
@@ -109,11 +118,7 @@ fn request(route: MindRoute, handle: &str, text: &str) -> Option<Value> {
         },
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(route.timeout())
-        .build()
-        .ok()?;
+    let client = mind_client(route)?;
     let response = client
         .post(format!("{}{}", MIND_ORIGIN, route.path()))
         .bearer_auth(token)
@@ -153,6 +158,8 @@ pub async fn mind_facet(handle: String, draft: String) -> Option<Value> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
 
     fn temp_token(mode: u32, body: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -220,5 +227,34 @@ mod tests {
         assert!(!valid_handle("friend/../../token"));
         assert!(!valid_handle(&"a".repeat(MAX_HANDLE_BYTES + 1)));
         assert!(valid_handle("@friend-name"));
+    }
+
+    #[test]
+    fn native_client_refuses_redirects_before_private_payload_can_follow() {
+        let redirect_target = TcpListener::bind("127.0.0.1:0").unwrap();
+        redirect_target.set_nonblocking(true).unwrap();
+        let target_address = redirect_target.local_addr().unwrap();
+
+        let redirector = TcpListener::bind("127.0.0.1:0").unwrap();
+        let redirector_address = redirector.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = redirector.accept().unwrap();
+            let response = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target_address}/escaped\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let client = mind_client(MindRoute::Facet).unwrap();
+        let response = client
+            .post(format!("http://{redirector_address}/private"))
+            .body("private draft")
+            .send()
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        thread::sleep(Duration::from_millis(25));
+        assert!(redirect_target.accept().is_err());
     }
 }
