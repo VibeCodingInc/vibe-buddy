@@ -213,6 +213,26 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
   const [sending, setSending] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
+  // UI defect): rows derived from split('\n') counted newline characters, so
+  // a long single-paragraph paste WRAPPED across many visual lines while the
+  // box stayed one row and clipped internally. scrollHeight sees wrapping;
+  // newline counting never can.
+  const autosizeComposer = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    const line = parseFloat(getComputedStyle(el).lineHeight) || 18;
+    const pad = 14; // vertical padding in the composer style
+    const max = line * 4 + pad;
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
+  };
+  // Paste, programmatic set (add & review), and send-clear all change input
+  // without a keystroke — size from the value, not just onChange.
+  useEffect(() => {
+    autosizeComposer(composerRef.current);
+  }, [input]);
   // ── PRIVATE MIND (sender-side telepathy) ─────────────────────────────
   // One source-honest line or nothing. Never blocks send, never a spinner.
   // The Studio answers in 30–50s; the result renders ONLY if the same
@@ -306,6 +326,31 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           return;
         }
         if (res.facet.silence) {
+          if (res.facet.escalating) {
+            // The Mind is still thinking in the background — collect the
+            // cached judgment with ONE quiet re-ask of the SAME fingerprint.
+            // Invisible; sending never waits; no spinner exists to add.
+            mindTrace('escalation_wait', { fp: fpTag(res.fingerprint) });
+            window.clearTimeout(mindAskTimer.current);
+            mindAskTimer.current = window.setTimeout(() => {
+              setInput((cur) => {
+                if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
+                  void askMind(chatWith, cur).then((again) => {
+                    if (!again || again.facet.silence) return;
+                    setInput((now) => {
+                      if (tensionFingerprint(chatWith, now) === again.fingerprint) {
+                        setMindOffer(again.facet);
+                        setMindOfferFp(again.fingerprint);
+                      }
+                      return now;
+                    });
+                  });
+                }
+                return cur;
+              });
+            }, 18_000);
+            return;
+          }
           maybeReask(res.fingerprint);
           return;
         }
@@ -1279,10 +1324,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         )}
         <div style={{ display: 'flex', gap: '6px' }}>
           <textarea
+            ref={composerRef}
             value={input}
-            rows={Math.min(4, input.split('\n').length)}
+            rows={1}
             onChange={(e) => {
               setInput(e.target.value);
+              autosizeComposer(e.target);
               // Send typing indicator (debounced — max once every 3s).
               // NEVER before thread evidence exists (codex r10 P2): the
               // composer-first state promises "nothing sent", and /api/typing

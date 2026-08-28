@@ -21,6 +21,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 export interface MindFacet {
   silence: boolean;
+  /** The Mind is still thinking in the background; re-ask quietly. */
+  escalating?: boolean;
   offer_kind?: 'facet' | 'aperture';
   line?: string;
   facet?: string;
@@ -157,11 +159,20 @@ export function primeMind(handle: string, context: string, now = Date.now()): vo
   if (!normalized) return;
   const fingerprint = contextFingerprint(handle, normalized);
   const current = primedFor.get(handle);
-  if (current?.fingerprint === fingerprint && current.expiresAt > now) return;
+  if (current?.fingerprint === fingerprint && current.expiresAt > now) {
+    mindTrace('prime_result', { class: 'warm' });
+    return;
+  }
   if (primingFor.get(handle) === fingerprint) return;
   primingFor.set(handle, fingerprint);
+  const started = Date.now();
+  mindTrace('prime_start', { context_bytes: new TextEncoder().encode(normalized).length });
   void invoke<unknown | null>('mind_prime', { handle, context: normalized })
     .then((res) => {
+      mindTrace('prime_result', {
+        class: res === null ? 'unreachable' : 'cold',
+        ms: Date.now() - started,
+      });
       if (res === null) throw new Error('prime unavailable');
       if (primingFor.get(handle) === fingerprint) {
         primedFor.set(handle, {

@@ -273,13 +273,13 @@ pub fn mind_trace(event: String, meta: Value) {
     // CLOSED VOCABULARY (round-2 P1): event names and meta KEYS are
     // whitelisted — an open key set meant a key itself could carry a draft.
     // Values are numbers/bools or short ids. Anything else is dropped whole.
-    const EVENTS: [&str; 10] = [
+    const EVENTS: [&str; 13] = [
         "ineligible", "timer_scheduled", "timer_fired", "request_attempted",
         "response", "discard_stale", "suppressed_dismissed", "offer_rendered",
-        "busy_skipped", "requeued",
+        "busy_skipped", "requeued", "prime_start", "prime_result", "escalation_wait",
     ];
-    const KEYS: [&str; 4] = ["fp", "draft_bytes", "context_bytes", "class"];
-    const CLASSES: [&str; 6] = ["offer", "facet", "aperture", "silence", "native_null", "invoke_error"];
+    const KEYS: [&str; 5] = ["fp", "draft_bytes", "context_bytes", "class", "ms"];
+    const CLASSES: [&str; 9] = ["offer", "facet", "aperture", "silence", "native_null", "invoke_error", "warm", "cold", "unreachable"];
     if !EVENTS.contains(&event.as_str()) {
         return;
     }
@@ -294,7 +294,7 @@ pub fn mind_trace(event: String, meta: Value) {
         let ok = match (k.as_str(), v) {
             ("fp", Value::String(s)) => s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric()),
             ("class", Value::String(s)) => CLASSES.contains(&s.as_str()),
-            ("draft_bytes" | "context_bytes", Value::Number(_)) => true,
+            ("draft_bytes" | "context_bytes" | "ms", Value::Number(_)) => true,
             _ => false,
         };
         if !ok {

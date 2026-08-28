@@ -478,3 +478,54 @@ describe('the field defect stays fixed — asks run to completion and converge',
     await answer(0);
   });
 });
+
+describe('the Camille paste and the background escalation (real-canary acceptance)', () => {
+  // The exact defect class: a 424-byte single-paragraph paste with NO
+  // newline. rows=split('\n') counted 1 forever; the box clipped.
+  const CAMILLE_PASTE =
+    'camille — i keep circling the same fork on this: the particle piece is finished enough to ship and the audience is warm right now, but every time i sit with it i want one more pass on the color field before it lives anywhere permanent, and i cannot tell whether that instinct is craft or fear, and whether waiting for artblocks access is patience or an excuse dressed as patience, so tell me which one you are hearing in this';
+
+  it('a long single-paragraph paste autosizes from rendered height, capped at four lines', () => {
+    mount();
+    const el = composer() as HTMLTextAreaElement;
+    // jsdom renders nothing, so give the element a wrapped scrollHeight.
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 160 });
+    type(CAMILLE_PASTE);
+    expect(new TextEncoder().encode(CAMILLE_PASTE).length).toBeGreaterThan(400);
+    expect(el.getAttribute('rows')).toBe('1'); // rows no longer counts newlines
+    expect(el.style.height).not.toBe('');      // height is measured, not guessed
+    expect(parseFloat(el.style.height)).toBeLessThanOrEqual(4 * 18 + 14 + 1); // 4-line cap
+    expect(el.style.overflowY).toBe('auto');   // beyond the cap scrolls, never clips
+  });
+
+  it('the composer resets after send', async () => {
+    mount();
+    const el = composer() as HTMLTextAreaElement;
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 160 });
+    type(CAMILLE_PASTE);
+    pressSend();
+    await flush();
+    // input cleared → autosize effect ran on '' → no lingering tall box
+    expect((composer() as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('escalating silence collects the background judgment with one quiet re-ask', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    // ask #1: the Mind says "still thinking in the background"
+    await act(async () => {
+      const a = pendingAsks[0];
+      a.resolve({
+        facet: { silence: true, escalating: true } as any,
+        fingerprint: tensionFingerprint(a.handle, a.draft),
+      });
+      await Promise.resolve();
+    });
+    expect(offerLine()).toBeNull(); // nothing rendered, nothing spinning
+    tick(18_000); // the quiet re-ask
+    expect(pendingAsks.length).toBe(2);
+    await answer(1);
+    expect(offerLine()).not.toBeNull(); // the cached judgment rendered
+  });
+});
