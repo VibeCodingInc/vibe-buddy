@@ -554,16 +554,21 @@ describe('PR14 review pins — stale escalation and busy stranding', () => {
     expect(offerLine()).not.toBeNull(); // the CURRENT draft got its offer
   });
 
-  it('a busy-skipped ask retries and the draft is never stranded', async () => {
+  it('a busy-skipped ask keeps waiting out a long-held native slot (90s holder)', async () => {
     mount();
-    // simulate the unmounted-panel case: the first ask reports busy
-    askMindMock.mockResolvedValueOnce('busy' as any);
+    // simulate the unmounted-panel case: the slot stays held across MANY
+    // retries (the native request can run up to 90s), then frees.
+    for (let i = 0; i < 20; i++) askMindMock.mockResolvedValueOnce('busy' as any);
     type(TENSE);
     tick(2500);
-    await act(async () => {}); // flush the 'busy' resolution so the retry timer arms
+    await act(async () => {});
     expect(askMindMock).toHaveBeenCalledTimes(1);
-    tick(3000); // the busy retry
-    expect(askMindMock).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 20; i++) {
+      tick(3000);
+      await act(async () => {});
+    }
+    // 21st attempt reached the real ask path — the draft was never stranded
+    expect(askMindMock).toHaveBeenCalledTimes(21);
     // the retried ask runs to completion and renders
     await act(async () => {
       const a = pendingAsks[pendingAsks.length - 1];

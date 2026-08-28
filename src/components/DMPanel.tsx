@@ -243,6 +243,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const privateMindDetail =
     mindOffer?.aperture?.shown_to_owner_only ?? mindOffer?.aperture?.shown_to_seth_only;
   const mindAskTimer = useRef<number | undefined>(undefined);
+  // 35 × 3s ≈ 105s — outlasts the 90s native request timeout, so a busy
+  // wait always outlives the slot-holder; a genuinely stuck flag still ends.
+  const BUSY_RETRY_CAP = 35;
   const mindDismissedFp = useRef<Set<string>>(new Set());
   // ── RETURN ("what changed?") ─────────────────────────────────────────
   // The exchange is not the point; the changed work is. Armed when a facet
@@ -270,9 +273,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // escalation collection). The review round proved that per-site copies
   // diverge: a requeued ask dropped the escalation handshake, a stale
   // escalation cancelled convergence, a busy skip stranded a fresh panel.
-  // `allowBusyRetry` bounds busy handling to ONE 3s retry per cycle;
+  // `busyRetriesLeft` lets a busy-skipped ask wait for the native slot: the
+  // in-flight request can hold it up to 90s (mind.rs timeout), so retries
+  // run every 3s until the slot frees, the draft changes, or the cap
+  // (~105s > the native timeout) rules out a stuck flag.
   // `allowEscalation` bounds background collection to ONE quiet re-ask.
-  const runAsk = (fp: string, opts: { allowBusyRetry: boolean; allowEscalation: boolean }) => {
+  const runAsk = (fp: string, opts: { busyRetriesLeft: number; allowEscalation: boolean }) => {
     setInput((cur) => {
       if (tensionFingerprint(chatWith, cur) === fp) {
         mindTrace('timer_fired', { fp: fpTag(fp) });
@@ -284,16 +290,16 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const handleAskResult = (
     res: Awaited<ReturnType<typeof askMind>>,
     fp: string,
-    opts: { allowBusyRetry: boolean; allowEscalation: boolean }
+    opts: { busyRetriesLeft: number; allowEscalation: boolean }
   ) => {
     if (res === 'busy') {
       // Skipped for an in-flight ask that may belong to an UNMOUNTED panel:
-      // retry once shortly rather than strand this draft. If it is busy
-      // again, silence — the next pause covers it.
-      if (!opts.allowBusyRetry) return;
+      // keep retrying at 3s until the native slot frees (runAsk itself stops
+      // the moment the draft moves on), rather than strand this draft.
+      if (opts.busyRetriesLeft <= 0) return;
       window.clearTimeout(mindAskTimer.current);
       mindAskTimer.current = window.setTimeout(
-        () => runAsk(fp, { ...opts, allowBusyRetry: false }),
+        () => runAsk(fp, { ...opts, busyRetriesLeft: opts.busyRetriesLeft - 1 }),
         3000
       );
       return;
@@ -320,7 +326,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         mindTrace('escalation_wait', { fp: fpTag(res.fingerprint) });
         window.clearTimeout(mindAskTimer.current);
         mindAskTimer.current = window.setTimeout(
-          () => runAsk(res.fingerprint, { allowBusyRetry: true, allowEscalation: false }),
+          () => runAsk(res.fingerprint, { busyRetriesLeft: BUSY_RETRY_CAP, allowEscalation: false }),
           18_000
         );
         return;
@@ -350,7 +356,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         mindTrace('requeued', { fp: fpTag(fp) });
         window.clearTimeout(mindAskTimer.current);
         mindAskTimer.current = window.setTimeout(
-          () => runAsk(fp, { allowBusyRetry: true, allowEscalation: true }),
+          () => runAsk(fp, { busyRetriesLeft: BUSY_RETRY_CAP, allowEscalation: true }),
           400
         );
       }
@@ -379,7 +385,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     }
     mindTrace('timer_scheduled', { fp: fpTag(fp) });
     mindAskTimer.current = window.setTimeout(
-      () => runAsk(fp, { allowBusyRetry: true, allowEscalation: true }),
+      () => runAsk(fp, { busyRetriesLeft: BUSY_RETRY_CAP, allowEscalation: true }),
       2500 // debounce: a pause in typing, not every keystroke
     );
     return () => window.clearTimeout(mindAskTimer.current);
