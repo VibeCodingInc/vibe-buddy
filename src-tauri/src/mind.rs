@@ -299,9 +299,21 @@ mod tests {
         fn private_http(sval: &str) -> bool {
             let trimmed = sval.trim();
             let lower = trimmed.to_ascii_lowercase();
-            if !lower.starts_with("http://") && !lower.starts_with("https://") {
-                return false; // not an http scope at all
+            // ANY scheme that could match http (round-10: *://localhost/*
+            // is a valid URLPattern covering http) is judged; only a scope
+            // whose scheme is CONCRETELY something else is exempt.
+            let Some(idx) = lower.find("://") else { return false };
+            let scheme = &lower[..idx];
+            let could_be_http = scheme == "http" || scheme == "https" || scheme.contains('*');
+            if !could_be_http {
+                return false; // concretely non-http (tauri://, asset://, …)
             }
+            // Normalize a wildcard scheme to a concrete one so the SAME
+            // parser judges the host that http traffic would reach.
+            let trimmed_owned = format!("http://{}", &trimmed[idx + 3..]);
+            let trimmed = trimmed_owned.as_str();
+            let lower = trimmed.to_ascii_lowercase();
+            let _ = &lower;
             // URLPattern SEMANTICS FAIL CLOSED (round-7): Tauri evaluates
             // scopes as patterns, so `http://127.0.0.1:*` and `http://*`
             // grant hosts/ports while never parsing as URLs. The ONLY
