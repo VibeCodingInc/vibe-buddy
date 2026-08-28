@@ -31,12 +31,14 @@ const memStore = new Map<string, string>();
 // Native edge controllable; gating helpers REAL.
 const askMindMock = vi.hoisted(() => vi.fn());
 const primeMindMock = vi.hoisted(() => vi.fn());
+const mindTraceMock = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/mindClient', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
   return {
     ...real,
     askMind: askMindMock,
     primeMind: primeMindMock,
+    mindTrace: mindTraceMock,
   };
 });
 
@@ -83,6 +85,7 @@ beforeEach(() => {
   pendingAsks = [];
   askMindMock.mockReset();
   primeMindMock.mockReset();
+  mindTraceMock.mockReset();
   incoming = null;
   askMindMock.mockImplementation(
     (handle: string, draft: string) =>
@@ -576,5 +579,87 @@ describe('PR14 review pins — stale escalation and busy stranding', () => {
       await Promise.resolve();
     });
     expect(offerLine()).not.toBeNull();
+  });
+});
+
+
+// ── P0 SEND DIAGNOSIS (2026-08-28) ──────────────────────────────────────
+// A real failed send in the field left ZERO evidence. These pin the send
+// trace contract: the gesture always lands and always says what happened,
+// a failure keeps the exact prose retryable, and a quick send touches the
+// Mind not at all.
+describe('send path — traced, honest about failure, Mind-free', () => {
+  const traces = (event: string) => mindTraceMock.mock.calls.filter((c) => c[0] === event);
+  const LONG_FLAT = 'here is a long ordinary message that says a lot of ordinary things about the day without asking anything consequential at all, just news';
+
+  it('a stored send traces clicked → attempted → stored(mid) → readback match', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true, id: 'msg_pin1', storedLength: LONG_FLAT.length };
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].content).toBe(LONG_FLAT); // byte-exact prose left the composer
+    expect(traces('send_clicked')).toHaveLength(1);
+    expect(traces('send_attempted')).toHaveLength(1);
+    const result = traces('send_result');
+    expect(result).toHaveLength(1);
+    expect(result[0][1]).toMatchObject({ class: 'stored', mid: 'msg_pin1' });
+    const readback = traces('send_readback');
+    expect(readback).toHaveLength(1);
+    expect(readback[0][1]).toMatchObject({ class: 'match', mid: 'msg_pin1' });
+  });
+
+  it('a second gesture during flight traces blocked_sending and sends exactly once', async () => {
+    let release!: (v: { ok: boolean }) => void;
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation((_to, content) => {
+      sent.push({ content });
+      return new Promise((r) => { release = r; });
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    // in flight: composer cleared, so retype and click again
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(sent).toHaveLength(1); // exactly one request
+    const blocked = traces('send_result').filter((c) => c[1]?.class === 'blocked_sending');
+    expect(blocked).toHaveLength(1); // and the swallowed gesture SAYS SO
+    await act(async () => { release({ ok: true }); await Promise.resolve(); });
+  });
+
+  it('a refused send keeps the exact prose in a retryable failed bubble — never cleared into ambiguity', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: false, error: 'server_unavailable' };
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(traces('send_result')[0][1]).toMatchObject({ class: 'refused' });
+    // the exact prose survives, visibly failed, with a live Retry
+    expect(screen.getByText(LONG_FLAT)).toBeTruthy();
+    const retryBtn = screen.getByText(/retry/i);
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true, id: 'msg_pin2' };
+    });
+    await act(async () => { fireEvent.click(retryBtn); });
+    expect(sent).toHaveLength(2);
+    expect(sent[1].content).toBe(LONG_FLAT); // retry re-sends the same bytes
+  });
+
+  it('a quick send makes ZERO Mind requests and never waits on one', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true, id: 'msg_pin3' };
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(sent).toHaveLength(1);
+    expect(askMindMock).not.toHaveBeenCalled();
   });
 });

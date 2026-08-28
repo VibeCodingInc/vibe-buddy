@@ -273,13 +273,28 @@ pub fn mind_trace(event: String, meta: Value) {
     // CLOSED VOCABULARY (round-2 P1): event names and meta KEYS are
     // whitelisted — an open key set meant a key itself could carry a draft.
     // Values are numbers/bools or short ids. Anything else is dropped whole.
-    const EVENTS: [&str; 13] = [
+    // send_* events (P0 send diagnosis, 2026-08-28): the ORDINARY send path
+    // was completely uninstrumented, so a real failed send in the field left
+    // zero evidence. click → handler → result → read-back, metadata only.
+    const EVENTS: [&str; 17] = [
         "ineligible", "timer_scheduled", "timer_fired", "request_attempted",
         "response", "discard_stale", "suppressed_dismissed", "offer_rendered",
         "busy_skipped", "requeued", "prime_start", "prime_result", "escalation_wait",
+        "send_clicked", "send_attempted", "send_result", "send_readback",
     ];
-    const KEYS: [&str; 5] = ["fp", "draft_bytes", "context_bytes", "class", "ms"];
-    const CLASSES: [&str; 9] = ["offer", "facet", "aperture", "silence", "native_null", "invoke_error", "warm", "cold", "unreachable"];
+    const KEYS: [&str; 6] = ["fp", "draft_bytes", "context_bytes", "class", "ms", "mid"];
+    const CLASSES: [&str; 17] = [
+        "offer", "facet", "aperture", "silence", "native_null", "invoke_error",
+        "warm", "cold", "unreachable",
+        // send outcome classes: stored (server accepted), refused (server said
+        // no, with a code the UI renders), transport (never reached a verdict),
+        // blocked_empty (handler refused: nothing to send), blocked_sending
+        // (handler refused: a send already in flight — the stuck-flag signal).
+        "stored", "refused", "transport", "blocked_empty", "blocked_sending",
+        // read-back verdicts: the server's copy is byte-identical / differs /
+        // was not served back on the verification read.
+        "match", "mismatch", "missing",
+    ];
     if !EVENTS.contains(&event.as_str()) {
         return;
     }
@@ -293,6 +308,8 @@ pub fn mind_trace(event: String, meta: Value) {
         }
         let ok = match (k.as_str(), v) {
             ("fp", Value::String(s)) => s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric()),
+            // a server message id ("msg_..."): short, id-shaped, never prose
+            ("mid", Value::String(s)) => s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
             ("class", Value::String(s)) => CLASSES.contains(&s.as_str()),
             ("draft_bytes" | "context_bytes" | "ms", Value::Number(_)) => true,
             _ => false,

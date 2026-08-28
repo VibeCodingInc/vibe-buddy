@@ -513,7 +513,18 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
 
   const send = async (text?: string, forceUnlinked?: boolean) => {
     const msg = text || input.trim();
-    if (!msg || sending) return;
+    // METADATA-ONLY send tracing (P0, 2026-08-28): the ordinary send path
+    // left zero evidence, so a failed send in the field was undiagnosable.
+    // Every gesture leaves a line: fired, blocked (and why), attempted,
+    // resulted, read back. Never the prose.
+    if (!msg) {
+      mindTrace('send_result', { class: 'blocked_empty' });
+      return;
+    }
+    if (sending) {
+      mindTrace('send_result', { class: 'blocked_sending' });
+      return;
+    }
     // The parent the HUMAN explicitly chose to answer (never a silent
     // newest-message default). Captured before the async send so an arriving
     // message can't shift the target mid-flight. forceUnlinked (the "send
@@ -544,8 +555,32 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     };
     setMessages((prev) => [...prev, optimistic]);
 
+    const sendStarted = Date.now();
+    mindTrace('send_attempted', { draft_bytes: new TextEncoder().encode(msg).length });
     const result = await buddyClient.sendMessageResult(chatWith, msg, replyTarget?.id);
+    mindTrace('send_result', {
+      class: result.ok ? 'stored' : result.error ? 'refused' : 'transport',
+      ms: Date.now() - sendStarted,
+      ...(result.id ? { mid: result.id } : {}),
+    });
     if (result.ok) {
+      // READ-BACK: the server said it stored this many chars under this id —
+      // verify byte-identity against what left the composer, using the
+      // receipt itself (storedLength) rather than a second network round
+      // trip. Fire-and-forget diagnostics; the send is already done.
+      if (result.id) {
+        // The server's length unit is unverified for non-ASCII prose, so a
+        // mismatch is claimed only when the receipt matches NO honest
+        // measure of the sent text (UTF-16 units, codepoints, UTF-8 bytes).
+        const lengths = [msg.length, [...msg].length, new TextEncoder().encode(msg).length];
+        mindTrace('send_readback', {
+          mid: result.id,
+          class:
+            result.storedLength === undefined || lengths.includes(result.storedLength)
+              ? 'match'
+              : 'mismatch',
+        });
+      }
       // A stored-message receipt is exactly the evidence the receipt
       // boundary waits for — the server thread now exists; polling may join,
       // and the receipt outlives this panel (codex r15 P2).
@@ -1368,6 +1403,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               // preventDefault, Return would BOTH send and grow the box.
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
+                mindTrace('send_clicked', { draft_bytes: new TextEncoder().encode(input).length });
                 send();
               }
             }}
@@ -1390,8 +1426,16 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
             autoFocus
           />
           <button
-            onClick={() => send()}
-            disabled={!input.trim() || sending}
+            // Deliberately NOT the `disabled` attribute (P0 send diagnosis):
+            // a disabled button swallows clicks with zero evidence, which is
+            // exactly how a stuck `sending` flag became invisible in the
+            // field. The click always lands, always traces, and send()
+            // itself refuses (and says why) when there is nothing to do.
+            onClick={() => {
+              mindTrace('send_clicked', { draft_bytes: new TextEncoder().encode(input).length });
+              send();
+            }}
+            aria-disabled={!input.trim() || sending}
             style={{
               background: input.trim() ? '#6B8FFF' : '#181818',
               border: 'none',
