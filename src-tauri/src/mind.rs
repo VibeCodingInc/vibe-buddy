@@ -273,9 +273,10 @@ pub fn mind_trace(event: String, meta: Value) {
     // CLOSED VOCABULARY (round-2 P1): event names and meta KEYS are
     // whitelisted — an open key set meant a key itself could carry a draft.
     // Values are numbers/bools or short ids. Anything else is dropped whole.
-    const EVENTS: [&str; 8] = [
+    const EVENTS: [&str; 10] = [
         "ineligible", "timer_scheduled", "timer_fired", "request_attempted",
         "response", "discard_stale", "suppressed_dismissed", "offer_rendered",
+        "busy_skipped", "requeued",
     ];
     const KEYS: [&str; 4] = ["fp", "draft_bytes", "context_bytes", "class"];
     const CLASSES: [&str; 6] = ["offer", "facet", "aperture", "silence", "native_null", "invoke_error"];

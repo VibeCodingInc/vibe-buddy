@@ -74,3 +74,22 @@ describe('private Mind priming cache', () => {
     expect(source).not.toContain('Authorization');
   });
 });
+
+describe('askMind busy contract — one native request, run to completion', () => {
+  it('a second ask during flight is skipped, not aborted into the first', async () => {
+    vi.resetModules();
+    const pending: Array<(v: unknown) => void> = [];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'mind_trace') return Promise.resolve(null);
+      return new Promise((resolve) => pending.push(resolve));
+    });
+    const mind = await import('../src/lib/mindClient');
+    const p1 = mind.askMind('friend', 'first long consequential draft with a real question in it?');
+    const p2 = await mind.askMind('friend', 'second draft typed while the first still runs?');
+    expect(p2).toBeNull(); // busy-skip — never a second native request
+    expect(pending).toHaveLength(1); // exactly ONE mind_facet in flight
+    pending[0]({ silence: false, offer_kind: 'facet', line: 'x' });
+    const r1 = await p1;
+    expect(r1?.facet.offer_kind).toBe('facet'); // ...and it COMPLETED
+  });
+});

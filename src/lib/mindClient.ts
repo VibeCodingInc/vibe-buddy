@@ -112,12 +112,18 @@ export function fpTag(fingerprint: string): string {
   return (h >>> 0).toString(36);
 }
 
-let inFlight: AbortController | null = null;
-// A working session, not a coffee break: the set costs ~100s to build, and
-// freshness is owned by the context fingerprint (a new message re-primes
-// regardless), so this is purely the retention backstop for the in-memory
-// pool. 15 minutes expired mid-read and silently pushed real passes onto
-// the cold path. Matches the Studio runtime.
+// ONE ask at a time, run to COMPLETION. The old supersede (abort the JS race
+// when a new pause arrives) interacted with the native single-flight to eat
+// every offer during a compose-pause-tweak rhythm: the older ask's result
+// arrived into an abandoned promise while the newer ask was refused at the
+// native boundary (observed live, 2026-08-28: three consecutive native_null,
+// a produced aperture never rendered). Staleness is the FINGERPRINT's job —
+// the completed result is judged, not the request lifecycle.
+let askBusy = false;
+
+// A working session, not a coffee break: freshness is owned by the context
+// fingerprint (a new served message re-primes regardless); this is only the
+// retention backstop. Matches the Studio runtime and iOS.
 const PRIME_TTL_MS = 2 * 60 * 60_000;
 const primedFor = new Map<string, { fingerprint: string; expiresAt: number }>();
 const primingFor = new Map<string, string>();
@@ -188,23 +194,18 @@ export async function askMind(
   handle: string,
   draft: string
 ): Promise<{ facet: MindFacet; fingerprint: string } | null> {
-  // one request at a time; a newer ask supersedes the old one
-  if (inFlight) inFlight.abort();
-  const ctrl = new AbortController();
-  inFlight = ctrl;
+  if (askBusy) {
+    // The caller re-asks after the in-flight one completes; refusing here
+    // (rather than aborting the older ask) is what lets SOME ask finish.
+    mindTrace('busy_skipped', {});
+    return null;
+  }
+  askBusy = true;
   const fingerprint = tensionFingerprint(handle, draft);
   mindTrace('request_attempted', { fp: fpTag(fingerprint), draft_bytes: new TextEncoder().encode(draft).length });
-  const timer = setTimeout(() => ctrl.abort(), 90_000);
   try {
-    const facet = await Promise.race([
-      invoke<MindFacet | null>('mind_facet', { handle, draft }),
-      new Promise<null>((resolve) => {
-        ctrl.signal.addEventListener('abort', () => resolve(null), { once: true });
-      }),
-    ]);
+    const facet = await invoke<MindFacet | null>('mind_facet', { handle, draft });
     if (!facet) {
-      // null from the native layer = REFUSED/UNREACHABLE — a different fact
-      // from the Mind answering with silence, and the trace keeps them apart.
       mindTrace('response', { fp: fpTag(fingerprint), class: 'native_null' });
       return null;
     }
@@ -215,9 +216,8 @@ export async function askMind(
     return { facet, fingerprint };
   } catch {
     mindTrace('response', { fp: fpTag(fingerprint), class: 'invoke_error' });
-    return null; // silence — never an error state in the composer
+    return null;
   } finally {
-    clearTimeout(timer);
-    if (inFlight === ctrl) inFlight = null;
+    askBusy = false;
   }
 }

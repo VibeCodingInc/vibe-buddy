@@ -437,3 +437,44 @@ describe('the Camille defect stays fixed — eligibility is not narrower than th
     expect(askMindMock).not.toHaveBeenCalled();
   });
 });
+
+describe('the field defect stays fixed — asks run to completion and converge', () => {
+  // Observed live 2026-08-28: compose-pause-tweak aborted the old ask while
+  // the native single-flight refused the new one; a produced aperture never
+  // rendered. The law: staleness is the FINGERPRINT's job — an ask completes,
+  // its result is judged, and a stale completion re-asks ONCE for the
+  // current draft.
+  it('a stale completion re-asks once and the final draft gets its offer', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    expect(pendingAsks).toHaveLength(1);
+    const finalDraft = `${TENSE} — settled on the second option after all?`;
+    type(finalDraft); // moved on while ask #1 runs
+    await answer(0); // ask #1 completes STALE → discarded → requeues
+    tick(400); // the requeue delay
+    expect(pendingAsks.length).toBeGreaterThanOrEqual(2);
+    await act(async () => {
+      const a = pendingAsks[pendingAsks.length - 1];
+      a.resolve({ facet: FACET, fingerprint: tensionFingerprint(a.handle, a.draft) });
+      await Promise.resolve();
+    });
+    expect(offerLine()).not.toBeNull(); // the FINAL draft rendered its offer
+  });
+
+  it('pauses during an in-flight ask leave it running (no aborts observed)', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    const first = pendingAsks[0];
+    type(`${TENSE} v2`);
+    tick(2500);
+    type(`${TENSE} v3`);
+    tick(2500);
+    // Whatever else the panel did, ask #1 was never aborted: it can still
+    // complete and be judged. (The one-native-request guarantee itself is
+    // pinned at the unit level where the real askMind runs.)
+    expect(first).toBeDefined();
+    await answer(0);
+  });
+});

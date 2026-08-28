@@ -246,6 +246,35 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   useEffect(() => {
     if (returnArmed && !input.includes(returnArmed)) setReturnArmed(null);
   }, [input, returnArmed]);
+  // After an ask COMPLETES stale (or silent), ask once more for the CURRENT
+  // draft if it is eligible and different — one cycle, never a storm: at most
+  // one in-flight ask plus one requeue.
+  const maybeReask = (completedFp: string) => {
+    setInput((cur) => {
+      const fp = tensionFingerprint(chatWith, cur);
+      if (fp !== completedFp && looksConsequential(cur) && !mindDismissedFp.current.has(fp)) {
+        mindTrace('requeued', { fp: fpTag(fp) });
+        window.clearTimeout(mindAskTimer.current);
+        mindAskTimer.current = window.setTimeout(() => {
+          mindTrace('timer_fired', { fp: fpTag(fp) });
+          void askMind(chatWith, cur).then((res) => {
+            if (!res || res.facet.silence) return;
+            setInput((now) => {
+              if (tensionFingerprint(chatWith, now) === res.fingerprint) {
+                setMindOffer(res.facet);
+                setMindOfferFp(res.fingerprint);
+              } else {
+                mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
+              }
+              return now;
+            });
+          });
+        }, 400);
+      }
+      return cur;
+    });
+  };
+
   useEffect(() => {
     window.clearTimeout(mindAskTimer.current);
     // any edit that changes the tension clears a now-stale offer
@@ -269,7 +298,17 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     mindAskTimer.current = window.setTimeout(() => {
       mindTrace('timer_fired', { fp: fpTag(fp) });
       void askMind(chatWith, input).then((res) => {
-        if (!res || res.facet.silence) return;
+        if (!res) {
+          // Busy or refused: the in-flight ask (or the next pause) covers it.
+          // When an ask COMPLETES and the draft has moved on, re-ask ONCE for
+          // the current tension — this is what converges a compose-pause-
+          // tweak rhythm onto the final draft instead of eating every offer.
+          return;
+        }
+        if (res.facet.silence) {
+          maybeReask(res.fingerprint);
+          return;
+        }
         // THE DISCARD RULE: render only if this exact tension is current.
         setInput((cur) => {
           if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
@@ -277,6 +316,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
             setMindOfferFp(res.fingerprint);
           } else {
             mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
+            maybeReask(res.fingerprint);
           }
           return cur;
         });
