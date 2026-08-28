@@ -11,16 +11,70 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-// A compiled ALLOWLIST of exactly two origins, tried in order — never a
-// configurable URL. Loopback first: an invitee's Mind is a LOCAL capability
-// awakened on their own machine (awaken.py binds 127.0.0.1 only), so their
-// Buddy finds it with zero setup. When nothing listens locally the connect
-// fails in ~1ms and the founder's private Tailnet Studio is tried. One Mind
-// per person; which one is decided by whose machine this is, not by config.
-const MIND_ORIGINS: [&str; 2] = [
-    "http://127.0.0.1:7788",
-    "http://100.121.205.111:7788",
-];
+// The canonical binary knows exactly ONE origin: loopback. A person's Mind
+// is a LOCAL capability awakened on their own machine (awaken.py binds
+// 127.0.0.1 only). There is NO compiled fallback to anyone else's endpoint —
+// a fallback list meant every canonical install would transmit a stranger's
+// draft to the founder's Tailnet when nothing listened locally (review on
+// #12: the auth would refuse it, but the bytes had already left the machine).
+//
+// A personal REMOTE Mind (the founder's always-on Studio, a future user's
+// own server) must be EXPLICITLY activated: a private, mode-checked local
+// file naming the endpoint — same posture as the bearer token, stored for
+// this principal on this machine, never compiled into the product.
+const MIND_LOOPBACK: &str = "http://127.0.0.1:7788";
+
+fn endpoint_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".vibe/mind/endpoint"))
+}
+
+/// The explicitly-activated personal endpoint, if any. Applies the same
+/// refusals as the token read: no symlinks, no group/other bits, and only
+/// private-range HTTP origins (loopback, RFC1918, CGNAT/Tailscale 100.64/10)
+/// — a public origin in this file is a misconfiguration, not a grant.
+fn personal_endpoint() -> Option<String> {
+    let path = endpoint_path()?;
+    let meta = fs::symlink_metadata(&path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return None;
+        }
+    }
+    let raw = fs::read_to_string(&path).ok()?;
+    let origin = raw.trim();
+    if origin.len() > 128 || !origin.starts_with("http://") {
+        return None;
+    }
+    let host = origin.strip_prefix("http://")?.split([':', '/']).next()?;
+    let octets: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
+    let private = match octets.as_slice() {
+        [127, ..] => true,
+        [10, ..] => true,
+        [192, 168, ..] => true,
+        [172, b, ..] => (16..=31).contains(b),
+        [100, b, ..] => (64..=127).contains(b), // CGNAT — Tailscale lives here
+        _ => false,
+    };
+    if !private || octets.len() != 4 {
+        return None;
+    }
+    Some(origin.trim_end_matches('/').to_owned())
+}
+
+fn mind_origins() -> Vec<String> {
+    let mut origins = vec![MIND_LOOPBACK.to_owned()];
+    if let Some(personal) = personal_endpoint() {
+        if personal != MIND_LOOPBACK {
+            origins.push(personal);
+        }
+    }
+    origins
+}
 const MAX_HANDLE_BYTES: usize = 64;
 const MAX_DRAFT_BYTES: usize = 4_000;
 const MAX_CONTEXT_BYTES: usize = 2_000;
@@ -129,7 +183,7 @@ fn request(route: MindRoute, handle: &str, text: &str) -> Option<Value> {
 
     let client = mind_client(route)?;
     let body = serde_json::to_vec(&payload).ok()?;
-    let response = MIND_ORIGINS.iter().find_map(|origin| {
+    let response = mind_origins().iter().find_map(|origin| {
         client
             .post(format!("{}{}", origin, route.path()))
             .bearer_auth(&token)
@@ -204,14 +258,67 @@ mod tests {
     }
 
     #[test]
-    fn native_destinations_are_exactly_local_then_founder_tailnet() {
-        // Order is the contract: the person's own machine outranks the
-        // founder's Studio, and nothing else is reachable at all.
-        assert_eq!(
-            MIND_ORIGINS,
-            ["http://127.0.0.1:7788", "http://100.121.205.111:7788"]
-        );
-        assert!(MIND_ORIGINS.iter().all(|o| !o.contains("slashvibe.dev")));
+    fn canonical_binary_compiles_no_endpoint_but_loopback() {
+        // The ruling on #12: the canonical binary may NEVER fall back to
+        // another person's endpoint. Loopback is the only compiled origin;
+        // anything else requires explicit local activation.
+        assert_eq!(MIND_LOOPBACK, "http://127.0.0.1:7788");
+        // Scan PRODUCTION source only — the test fixtures below legitimately
+        // use a Tailnet address as a valid explicitly-activated example.
+        let src = include_str!("mind.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!production.contains("100.121.205.111"), "no compiled personal endpoint");
+        // As a URL, not as a word — the module docstring legitimately NAMES
+        // the wire to say it never talks to it.
+        assert!(!production.contains("://slashvibe") && !production.contains("://www.slashvibe"),
+                "the Mind never touches the wire");
+    }
+
+    #[test]
+    fn personal_endpoint_requires_private_origin_and_private_file() {
+        let dir = std::env::temp_dir();
+        let write = |name: &str, body: &str, mode: u32| -> PathBuf {
+            let p = dir.join(format!("vibe-mind-ep-{}-{}", std::process::id(), name));
+            fs::write(&p, body).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+            }
+            p
+        };
+        // the checker itself, pointed at controlled files
+        let check = |p: &Path| -> Option<String> {
+            let meta = fs::symlink_metadata(p).ok()?;
+            if meta.file_type().is_symlink() || !meta.is_file() { return None; }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o077 != 0 { return None; }
+            }
+            let raw = fs::read_to_string(p).ok()?;
+            let origin = raw.trim();
+            if !origin.starts_with("http://") { return None; }
+            let host = origin.strip_prefix("http://")?.split([':', '/']).next()?;
+            let octets: Vec<u8> = host.split('.').filter_map(|x| x.parse().ok()).collect();
+            let private = match octets.as_slice() {
+                [127, ..] | [10, ..] | [192, 168, ..] => true,
+                [172, b, ..] => (16..=31).contains(b),
+                [100, b, ..] => (64..=127).contains(b),
+                _ => false,
+            };
+            if !private || octets.len() != 4 { return None; }
+            Some(origin.to_owned())
+        };
+        let good = write("good", "http://100.121.205.111:7788\n", 0o600);
+        assert!(check(&good).is_some());
+        let public = write("public", "http://8.8.8.8:7788", 0o600);
+        assert!(check(&public).is_none(), "public origins are refused");
+        let https_hostname = write("host", "http://evil.example:7788", 0o600);
+        assert!(check(&https_hostname).is_none(), "hostnames are refused");
+        let loose = write("loose", "http://100.121.205.111:7788", 0o644);
+        assert!(check(&loose).is_none(), "group/other-readable file is refused");
+        for p in [good, public, https_hostname, loose] { let _ = fs::remove_file(p); }
     }
 
     #[test]
