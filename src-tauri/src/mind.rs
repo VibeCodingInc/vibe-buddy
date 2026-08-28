@@ -297,8 +297,30 @@ mod tests {
         // format fails closed: an unparseable capability has no business in
         // the repo.
         fn private_http(sval: &str) -> bool {
-            let candidate = sval.trim().trim_end_matches("/*").trim_end_matches('*');
-            let Ok(u) = url::Url::parse(candidate) else { return false };
+            let trimmed = sval.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            if !lower.starts_with("http://") && !lower.starts_with("https://") {
+                return false; // not an http scope at all
+            }
+            // URLPattern SEMANTICS FAIL CLOSED (round-7): Tauri evaluates
+            // scopes as patterns, so `http://127.0.0.1:*` and `http://*`
+            // grant hosts/ports while never parsing as URLs. The ONLY
+            // wildcard this repo permits is a single trailing path `/*`;
+            // any other `*` in an http scope is judged PRIVATE (refused),
+            // as is an http-prefixed string that will not parse.
+            let candidate = trimmed.strip_suffix("/*").unwrap_or(trimmed);
+            // ONE leading subdomain wildcard on a CONCRETE domain is a
+            // legitimate public scope (https://*.githubusercontent.com);
+            // judging the concrete suffix judges every match. Any OTHER
+            // wildcard — host `*`, port `:*`, mid-host — fails closed.
+            let candidate = candidate
+                .replacen("://*.", "://", 1);
+            if candidate.contains('*') {
+                return true; // wildcard host/port/path — fail closed
+            }
+            let Ok(u) = url::Url::parse(&candidate) else {
+                return true; // http-shaped but unparseable — fail closed
+            };
             let scheme = u.scheme().to_ascii_lowercase();
             if scheme != "http" && scheme != "https" {
                 return false;
