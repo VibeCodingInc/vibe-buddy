@@ -304,7 +304,15 @@ mod tests {
             // whose scheme is CONCRETELY something else is exempt.
             let Some(idx) = lower.find("://") else { return false };
             let scheme = &lower[..idx];
-            let could_be_http = scheme == "http" || scheme == "https" || scheme.contains('*');
+            // Round-11 closes the scheme class: URLPattern admits far more
+            // than '*' in a scheme — (http|https), http{s}?, :scheme(http)
+            // all match HTTP. So the ONLY exemption is a scheme that is a
+            // CONCRETE valid RFC-3986 token and not http/https; anything
+            // non-literal is judged as the http it could match.
+            let concrete_scheme = !scheme.is_empty()
+                && scheme.chars().next().unwrap().is_ascii_lowercase()
+                && scheme.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'));
+            let could_be_http = scheme == "http" || scheme == "https" || !concrete_scheme;
             if !could_be_http {
                 return false; // concretely non-http (tauri://, asset://, …)
             }
