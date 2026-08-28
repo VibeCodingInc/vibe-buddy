@@ -28,13 +28,22 @@ fn endpoint_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".vibe/mind/endpoint"))
 }
 
-/// The explicitly-activated personal endpoint, if any. Applies the same
-/// refusals as the token read: no symlinks, no group/other bits, and only
-/// private-range HTTP origins (loopback, RFC1918, CGNAT/Tailscale 100.64/10)
-/// — a public origin in this file is a misconfiguration, not a grant.
+/// The explicitly-activated personal endpoint, if any — read from disk and
+/// validated by `personal_endpoint_from`, which the tests call DIRECTLY so
+/// the exact production validator is the thing pinned.
 fn personal_endpoint() -> Option<String> {
-    let path = endpoint_path()?;
-    let meta = fs::symlink_metadata(&path).ok()?;
+    personal_endpoint_from(&endpoint_path()?)
+}
+
+/// Applies the same refusals as the token read (no symlink, no group/other
+/// bits) and then parses the origin ONCE with the same `url` crate reqwest
+/// uses — validating with a hand-rolled splitter while reqwest parses for
+/// real is exactly how `http://10.0.0.1:pw@attacker.example` walks through
+/// (review P1). Requirements: plain http, EMPTY credentials, an IPv4 host in
+/// a private range (loopback / RFC1918 / CGNAT 100.64/10), an explicit port,
+/// and nothing else — no path beyond "/", no query, no fragment.
+fn personal_endpoint_from(path: &Path) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
     if meta.file_type().is_symlink() || !meta.is_file() {
         return None;
     }
@@ -45,25 +54,36 @@ fn personal_endpoint() -> Option<String> {
             return None;
         }
     }
-    let raw = fs::read_to_string(&path).ok()?;
-    let origin = raw.trim();
-    if origin.len() > 128 || !origin.starts_with("http://") {
+    let raw = fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 || trimmed.chars().any(char::is_whitespace) {
         return None;
     }
-    let host = origin.strip_prefix("http://")?.split([':', '/']).next()?;
-    let octets: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
-    let private = match octets.as_slice() {
-        [127, ..] => true,
-        [10, ..] => true,
-        [192, 168, ..] => true,
-        [172, b, ..] => (16..=31).contains(b),
-        [100, b, ..] => (64..=127).contains(b), // CGNAT — Tailscale lives here
-        _ => false,
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if parsed.scheme() != "http"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return None;
+    }
+    let host = match parsed.host()? {
+        url::Host::Ipv4(ip) => ip,
+        _ => return None, // hostnames and IPv6 are refused outright
     };
-    if !private || octets.len() != 4 {
+    let o = host.octets();
+    let private = o[0] == 127
+        || o[0] == 10
+        || (o[0] == 192 && o[1] == 168)
+        || (o[0] == 172 && (16..=31).contains(&o[1]))
+        || (o[0] == 100 && (64..=127).contains(&o[1])); // CGNAT — Tailscale
+    if !private {
         return None;
     }
-    Some(origin.trim_end_matches('/').to_owned())
+    let port = parsed.port()?; // explicit port required
+    Some(format!("http://{}:{}", host, port))
 }
 
 fn mind_origins() -> Vec<String> {
@@ -147,6 +167,9 @@ fn valid_handle(handle: &str) -> bool {
 
 fn mind_client(route: MindRoute) -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
+        // System proxies would receive the bearer and the private payload for
+        // ANY origin, activated or not (review P1) — this client never uses one.
+        .no_proxy()
         .connect_timeout(Duration::from_secs(3))
         .timeout(route.timeout())
         .redirect(reqwest::redirect::Policy::none())
@@ -275,7 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn personal_endpoint_requires_private_origin_and_private_file() {
+    fn personal_endpoint_validator_is_the_production_function() {
+        // These call personal_endpoint_from DIRECTLY — the exact code the
+        // binary runs — with every trick from the review: userinfo smuggling,
+        // hostname suffixes that survive numeric filtering, paths, queries,
+        // fragments, IPv6, trailing dots, whitespace, uppercase schemes,
+        // loose file modes, and symlinks.
         let dir = std::env::temp_dir();
         let write = |name: &str, body: &str, mode: u32| -> PathBuf {
             let p = dir.join(format!("vibe-mind-ep-{}-{}", std::process::id(), name));
@@ -287,38 +315,39 @@ mod tests {
             }
             p
         };
-        // the checker itself, pointed at controlled files
-        let check = |p: &Path| -> Option<String> {
-            let meta = fs::symlink_metadata(p).ok()?;
-            if meta.file_type().is_symlink() || !meta.is_file() { return None; }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if meta.permissions().mode() & 0o077 != 0 { return None; }
-            }
-            let raw = fs::read_to_string(p).ok()?;
-            let origin = raw.trim();
-            if !origin.starts_with("http://") { return None; }
-            let host = origin.strip_prefix("http://")?.split([':', '/']).next()?;
-            let octets: Vec<u8> = host.split('.').filter_map(|x| x.parse().ok()).collect();
-            let private = match octets.as_slice() {
-                [127, ..] | [10, ..] | [192, 168, ..] => true,
-                [172, b, ..] => (16..=31).contains(b),
-                [100, b, ..] => (64..=127).contains(b),
-                _ => false,
-            };
-            if !private || octets.len() != 4 { return None; }
-            Some(origin.to_owned())
-        };
-        let good = write("good", "http://100.121.205.111:7788\n", 0o600);
-        assert!(check(&good).is_some());
-        let public = write("public", "http://8.8.8.8:7788", 0o600);
-        assert!(check(&public).is_none(), "public origins are refused");
-        let https_hostname = write("host", "http://evil.example:7788", 0o600);
-        assert!(check(&https_hostname).is_none(), "hostnames are refused");
-        let loose = write("loose", "http://100.121.205.111:7788", 0o644);
-        assert!(check(&loose).is_none(), "group/other-readable file is refused");
-        for p in [good, public, https_hostname, loose] { let _ = fs::remove_file(p); }
+        let ok = |name: &str, body: &str| personal_endpoint_from(&write(name, body, 0o600));
+        assert_eq!(ok("good", "http://100.121.205.111:7788\n"),
+                   Some("http://100.121.205.111:7788".into()));
+        assert_eq!(ok("lo", "http://127.0.0.1:7788"), Some("http://127.0.0.1:7788".into()));
+        // the review's exact exploits
+        assert!(ok("suffix", "http://10.0.0.1.attacker.example:7788").is_none(),
+                "hostname suffix must not survive numeric filtering");
+        assert!(ok("userinfo", "http://10.0.0.1:pw@attacker.example:7788").is_none(),
+                "userinfo smuggling must be refused");
+        assert!(ok("user2", "http://a@10.0.0.1:7788").is_none(), "any credentials refused");
+        assert!(ok("path", "http://10.0.0.1:7788/exfil").is_none(), "paths refused");
+        assert!(ok("query", "http://10.0.0.1:7788/?x=1").is_none(), "queries refused");
+        assert!(ok("frag", "http://10.0.0.1:7788/#f").is_none(), "fragments refused");
+        assert!(ok("v6", "http://[::1]:7788").is_none(), "IPv6 refused outright");
+        // A trailing dot is NORMALIZED to the same IPv4 by the one shared
+        // parser — validator and reqwest agree by construction, so what is
+        // returned (and dialed) is the canonical private origin. The exploit
+        // was parser DISAGREEMENT; one parser closes it.
+        assert_eq!(ok("dot", "http://10.0.0.1.:7788"), Some("http://10.0.0.1:7788".into()));
+        assert!(ok("public", "http://8.8.8.8:7788").is_none(), "public IPv4 refused");
+        assert!(ok("https", "https://10.0.0.1:7788").is_none(), "https (hostname-style trust) refused");
+        // Scheme case is likewise normalized by the shared parser — the
+        // canonical private origin is what gets dialed.
+        assert_eq!(ok("upper", "HTTP://10.0.0.1:7788"), Some("http://10.0.0.1:7788".into()));
+        assert!(ok("noport", "http://10.0.0.1").is_none(), "explicit port required");
+        assert!(ok("ws", "http://10.0.0.1:7788 http://evil").is_none(), "inner whitespace refused");
+        let loose = write("loose", "http://10.0.0.1:7788", 0o644);
+        assert!(personal_endpoint_from(&loose).is_none(), "group/other-readable refused");
+        let target = write("target", "http://10.0.0.1:7788", 0o600);
+        let link = dir.join(format!("vibe-mind-ep-{}-link", std::process::id()));
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(personal_endpoint_from(&link).is_none(), "symlinks refused");
     }
 
     #[test]
