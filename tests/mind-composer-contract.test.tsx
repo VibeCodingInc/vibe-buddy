@@ -612,6 +612,20 @@ describe('send path — traced, honest about failure, Mind-free', () => {
     expect(readback[0][1]).toMatchObject({ class: 'match', mid: 'msg_pin1' });
   });
 
+  it('an absent receipt traces readback missing — evidence absent is never a match', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true }; // stored, but no id and no storedLength served
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    const readback = traces('send_readback');
+    expect(readback).toHaveLength(1);
+    expect(readback[0][1]).toMatchObject({ class: 'missing' });
+    expect(readback[0][1].mid).toBeUndefined();
+  });
+
   it('a second gesture during flight traces blocked_sending and sends exactly once', async () => {
     let release!: (v: { ok: boolean }) => void;
     vi.mocked(buddyClient.sendMessageResult).mockImplementation((_to, content) => {

@@ -291,8 +291,10 @@ pub fn mind_trace(event: String, meta: Value) {
         // blocked_empty (handler refused: nothing to send), blocked_sending
         // (handler refused: a send already in flight — the stuck-flag signal).
         "stored", "refused", "transport", "blocked_empty", "blocked_sending",
-        // read-back verdicts: the server's copy is byte-identical / differs /
-        // was not served back on the verification read.
+        // read-back verdicts — LENGTH checks, not byte identity (metadata
+        // cannot carry prose and the server serves no digest): the stored-
+        // length receipt matches an honest measure of the sent text /
+        // matches none / the receipt fields were absent (never a match).
         "match", "mismatch", "missing",
     ];
     if !EVENTS.contains(&event.as_str()) {

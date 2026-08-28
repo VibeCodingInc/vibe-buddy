@@ -564,21 +564,21 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       ...(result.id ? { mid: result.id } : {}),
     });
     if (result.ok) {
-      // READ-BACK: the server said it stored this many chars under this id —
-      // verify byte-identity against what left the composer, using the
-      // receipt itself (storedLength) rather than a second network round
-      // trip. Fire-and-forget diagnostics; the send is already done.
-      if (result.id) {
-        // The server's length unit is unverified for non-ASCII prose, so a
-        // mismatch is claimed only when the receipt matches NO honest
-        // measure of the sent text (UTF-16 units, codepoints, UTF-8 bytes).
+      // READ-BACK (a LENGTH check, stated honestly — review P1): the
+      // server's storedLength receipt is compared against the sent text; it
+      // can catch truncation, never prove byte identity (metadata cannot
+      // carry prose, and the server serves no digest). An absent receipt
+      // field is 'missing' — evidence absent is never evidence of a match.
+      {
         const lengths = [msg.length, [...msg].length, new TextEncoder().encode(msg).length];
         mindTrace('send_readback', {
-          mid: result.id,
+          ...(result.id ? { mid: result.id } : {}),
           class:
-            result.storedLength === undefined || lengths.includes(result.storedLength)
-              ? 'match'
-              : 'mismatch',
+            !result.id || result.storedLength === undefined
+              ? 'missing'
+              : lengths.includes(result.storedLength)
+                ? 'match'
+                : 'mismatch',
         });
       }
       // A stored-message receipt is exactly the evidence the receipt
