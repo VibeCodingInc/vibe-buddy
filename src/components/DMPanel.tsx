@@ -105,6 +105,19 @@ export function renderBodyWithHandles(
   return onOpen ? parts.filter((p) => p !== '') : [body];
 }
 
+// A redemption lands its redeemer at /t/{thread_id} (#320) — so when such a
+// link appears inside a message body, the honest render is the THREAD it
+// names, not a jump to a browser. Extraction only; resolution happens on tap
+// through the served thread (vibeClient.resolveThreadPeer), never a guess.
+const THREAD_LINK = /https?:\/\/(?:www\.)?slashvibe\.dev\/t\/([A-Za-z0-9_-]{1,64})/g;
+export function threadLinksIn(body: string): Array<{ threadId: string; text: string }> {
+  const out: Array<{ threadId: string; text: string }> = [];
+  for (const m of body.matchAll(THREAD_LINK)) {
+    out.push({ threadId: m[1], text: m[0] });
+  }
+  return out;
+}
+
 // A thread can span months, so a bare time ("1:56 PM") can't tell today's
 // message from one 164 days ago. Show the date whenever it isn't today:
 // today → time only, yesterday → "Yesterday 1:56 PM", older → "Feb 3, 1:56 PM"
@@ -843,8 +856,34 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                     >
                       {part.text}
                     </span>
-                  ),
+                  )
                 )}
+                {threadLinksIn(msg.content).map((tl, i) => (
+                  <span
+                    key={`t-${i}`}
+                    role="link"
+                    tabIndex={0}
+                    onClick={async () => {
+                      const peer = await buddyClient.resolveThreadPeer(tl.threadId);
+                      if (peer) onOpenThread?.(peer);
+                    }}
+                    onKeyDown={async (e) => {
+                      if (e.key !== 'Enter') return;
+                      const peer = await buddyClient.resolveThreadPeer(tl.threadId);
+                      if (peer) onOpenThread?.(peer);
+                    }}
+                    style={{
+                      display: 'block',
+                      marginTop: 4,
+                      fontSize: 11,
+                      color: color.dim,
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    open this thread here ›
+                  </span>
+                ))}
               </div>
               <div
                 style={{

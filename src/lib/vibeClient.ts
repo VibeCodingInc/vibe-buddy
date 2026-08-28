@@ -892,6 +892,85 @@ class BuddyClient {
    * (each user is capped at 3 unused), and falls back to the referral page if
    * the invites API is unreachable so the button never dead-ends.
    */
+  /**
+   * A thought-bearing, optionally NAMED invitation (#320 consumption).
+   *
+   * `firstThought` is the EXACT prose that materializes as this user's first
+   * message when the invitation is redeemed — the server validates shape only
+   * and never rewrites it. `forGithub` names the one nontransferable
+   * recipient by GitHub login.
+   *
+   * The server refuses a thought from a handle-only session with a STRUCTURED
+   * `principal_required` + reauth action; callers key on the discriminant and
+   * render `action.label` as a button — never the raw error string.
+   */
+  async createThoughtInvite(
+    firstThought: string,
+    forGithub?: string
+  ): Promise<
+    | { kind: 'created'; shareUrl: string; carriesThought: boolean }
+    | { kind: 'principal_required'; label: string; url: string; hint: string }
+    | { kind: 'refused'; error: string }
+    | { kind: 'unreachable' }
+  > {
+    try {
+      const res = await this.authenticatedRequest({
+        method: 'POST',
+        url: `${API_URL}/invites`,
+        body: {
+          ...(firstThought.trim() ? { first_thought: firstThought.trim() } : {}),
+          ...(forGithub?.trim() ? { for_github: forGithub.trim() } : {}),
+        },
+      });
+      if (res.ok && res.data?.share_url) {
+        return {
+          kind: 'created',
+          shareUrl: res.data.share_url,
+          carriesThought: Boolean(res.data.carries_thought),
+        };
+      }
+      if (res.data?.code === 'principal_required' && res.data?.action?.url) {
+        return {
+          kind: 'principal_required',
+          label: res.data.action.label || 'Refresh your /vibe session',
+          url: res.data.action.url,
+          hint: res.data.action.hint || res.data.error || '',
+        };
+      }
+      if (typeof res.data?.error === 'string' && res.data.error) {
+        return { kind: 'refused', error: res.data.error };
+      }
+      return { kind: 'unreachable' };
+    } catch {
+      return { kind: 'unreachable' };
+    }
+  }
+
+  /**
+   * The other participant of a served thread id — the /t/{thread_id} landing
+   * a redemption redirects to (#320). Buddy navigates threads by PEER, so a
+   * /t/ link opens by resolving the id through the served thread; null when
+   * the thread is not served to this principal (never a guess).
+   */
+  async resolveThreadPeer(threadId: string): Promise<string | null> {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(threadId)) return null;
+    try {
+      const res = await this.authenticatedRequest({
+        method: 'GET',
+        url: `${API_URL}/v2/threads/${encodeURIComponent(threadId)}`,
+      });
+      const t = res.data?.thread || res.data;
+      const me = (this.handle || '').toLowerCase();
+      for (const key of ['participant_a', 'participant_b']) {
+        const p = (t?.[key] || '').toLowerCase();
+        if (p && p !== me) return p;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async getInviteLink(): Promise<string> {
     const fallback = `https://www.slashvibe.dev/invite/${this.handle || ''}`;
     if (!this.handle) return fallback;
