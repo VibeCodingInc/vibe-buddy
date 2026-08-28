@@ -1232,7 +1232,11 @@ class BuddyClient {
    * server-side errors, so an ok here never claims the handle was
    * verified — it claims exactly one thing: this send was stored.
    */
-  async sendMessageResult(to: string, content: string, replyTo?: string): Promise<{ ok: boolean; error?: string }> {
+  async sendMessageResult(
+    to: string,
+    content: string,
+    replyTo?: string
+  ): Promise<{ ok: boolean; error?: string; id?: string; storedLength?: number }> {
     if (!this.handle) return { ok: false };
 
     try {
@@ -1253,7 +1257,18 @@ class BuddyClient {
         },
       });
 
-      if (ok) return { ok: true };
+      if (ok) {
+        // The stored-message receipt: the server's own id for the row it
+        // wrote, plus how many chars it stored — the evidence a send trace
+        // and a read-back verification hang off (P0 send diagnosis).
+        const msg = (data as { message?: { id?: unknown } } | null)?.message;
+        const id = msg && typeof msg.id === 'string' ? msg.id : undefined;
+        const storedLength =
+          data && typeof (data as { storedLength?: unknown }).storedLength === 'number'
+            ? (data as { storedLength: number }).storedLength
+            : undefined;
+        return { ok: true, id, storedLength };
+      }
       const error = data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
         ? (data as { error: string }).error
         : undefined;

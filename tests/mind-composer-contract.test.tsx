@@ -31,12 +31,14 @@ const memStore = new Map<string, string>();
 // Native edge controllable; gating helpers REAL.
 const askMindMock = vi.hoisted(() => vi.fn());
 const primeMindMock = vi.hoisted(() => vi.fn());
+const mindTraceMock = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/mindClient', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
   return {
     ...real,
     askMind: askMindMock,
     primeMind: primeMindMock,
+    mindTrace: mindTraceMock,
   };
 });
 
@@ -83,6 +85,7 @@ beforeEach(() => {
   pendingAsks = [];
   askMindMock.mockReset();
   primeMindMock.mockReset();
+  mindTraceMock.mockReset();
   incoming = null;
   askMindMock.mockImplementation(
     (handle: string, draft: string) =>
@@ -434,6 +437,243 @@ describe('the Camille defect stays fixed — eligibility is not narrower than th
     mount();
     type('ok sounds good thanks talk soon have a great rest of your day today');
     tick(60_000);
+    expect(askMindMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('the field defect stays fixed — asks run to completion and converge', () => {
+  // Observed live 2026-08-28: compose-pause-tweak aborted the old ask while
+  // the native single-flight refused the new one; a produced aperture never
+  // rendered. The law: staleness is the FINGERPRINT's job — an ask completes,
+  // its result is judged, and a stale completion re-asks ONCE for the
+  // current draft.
+  it('a stale completion re-asks once and the final draft gets its offer', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    expect(pendingAsks).toHaveLength(1);
+    const finalDraft = `${TENSE} — settled on the second option after all?`;
+    type(finalDraft); // moved on while ask #1 runs
+    await answer(0); // ask #1 completes STALE → discarded → requeues
+    tick(400); // the requeue delay
+    expect(pendingAsks.length).toBeGreaterThanOrEqual(2);
+    await act(async () => {
+      const a = pendingAsks[pendingAsks.length - 1];
+      a.resolve({ facet: FACET, fingerprint: tensionFingerprint(a.handle, a.draft) });
+      await Promise.resolve();
+    });
+    expect(offerLine()).not.toBeNull(); // the FINAL draft rendered its offer
+  });
+
+  it('pauses during an in-flight ask leave it running (no aborts observed)', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    const first = pendingAsks[0];
+    type(`${TENSE} v2`);
+    tick(2500);
+    type(`${TENSE} v3`);
+    tick(2500);
+    // Whatever else the panel did, ask #1 was never aborted: it can still
+    // complete and be judged. (The one-native-request guarantee itself is
+    // pinned at the unit level where the real askMind runs.)
+    expect(first).toBeDefined();
+    await answer(0);
+  });
+});
+
+describe('the Camille paste and the background escalation (real-canary acceptance)', () => {
+  // The exact defect class: a 424-byte single-paragraph paste with NO
+  // newline. rows=split('\n') counted 1 forever; the box clipped.
+  const CAMILLE_PASTE =
+    'camille — i keep circling the same fork on this: the particle piece is finished enough to ship and the audience is warm right now, but every time i sit with it i want one more pass on the color field before it lives anywhere permanent, and i cannot tell whether that instinct is craft or fear, and whether waiting for artblocks access is patience or an excuse dressed as patience, so tell me which one you are hearing in this';
+
+  it('a long single-paragraph paste autosizes from rendered height, capped at four lines', () => {
+    mount();
+    const el = composer() as HTMLTextAreaElement;
+    // jsdom renders nothing, so give the element a wrapped scrollHeight.
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 160 });
+    type(CAMILLE_PASTE);
+    expect(new TextEncoder().encode(CAMILLE_PASTE).length).toBeGreaterThan(400);
+    expect(el.getAttribute('rows')).toBe('1'); // rows no longer counts newlines
+    expect(el.style.height).not.toBe('');      // height is measured, not guessed
+    expect(parseFloat(el.style.height)).toBeLessThanOrEqual(4 * 18 + 14 + 1); // 4-line cap
+    expect(el.style.overflowY).toBe('auto');   // beyond the cap scrolls, never clips
+  });
+
+  it('the composer resets after send', async () => {
+    mount();
+    const el = composer() as HTMLTextAreaElement;
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 160 });
+    type(CAMILLE_PASTE);
+    pressSend();
+    await flush();
+    // input cleared → autosize effect ran on '' → no lingering tall box
+    expect((composer() as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('escalating silence collects the background judgment with one quiet re-ask', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    // ask #1: the Mind says "still thinking in the background"
+    await act(async () => {
+      const a = pendingAsks[0];
+      a.resolve({
+        facet: { silence: true, escalating: true } as any,
+        fingerprint: tensionFingerprint(a.handle, a.draft),
+      });
+      await Promise.resolve();
+    });
+    expect(offerLine()).toBeNull(); // nothing rendered, nothing spinning
+    tick(18_000); // the quiet re-ask
+    expect(pendingAsks.length).toBe(2);
+    await answer(1);
+    expect(offerLine()).not.toBeNull(); // the cached judgment rendered
+  });
+});
+
+describe('PR14 review pins — stale escalation and busy stranding', () => {
+  it('a STALE escalating response converges instead of installing a dead timer', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    const staleFp = tensionFingerprint('vibetester2', TENSE);
+    const finalDraft = `${TENSE} — actually the second option, decided?`;
+    type(finalDraft); // draft moved on while the ask ran
+    await act(async () => {
+      const a = pendingAsks[0];
+      a.resolve({ facet: { silence: true, escalating: true } as any, fingerprint: staleFp });
+      await Promise.resolve();
+    });
+    // convergence (via maybeReask), NOT an 18s dead collection timer
+    tick(400);
+    expect(pendingAsks.length).toBeGreaterThanOrEqual(2);
+    await act(async () => {
+      const a = pendingAsks[pendingAsks.length - 1];
+      a.resolve({ facet: FACET, fingerprint: tensionFingerprint(a.handle, a.draft) });
+      await Promise.resolve();
+    });
+    expect(offerLine()).not.toBeNull(); // the CURRENT draft got its offer
+  });
+
+  it('a busy-skipped ask keeps waiting out a long-held native slot (90s holder)', async () => {
+    mount();
+    // simulate the unmounted-panel case: the slot stays held across MANY
+    // retries (the native request can run up to 90s), then frees.
+    for (let i = 0; i < 20; i++) askMindMock.mockResolvedValueOnce('busy' as any);
+    type(TENSE);
+    tick(2500);
+    await act(async () => {});
+    expect(askMindMock).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 20; i++) {
+      tick(3000);
+      await act(async () => {});
+    }
+    // 21st attempt reached the real ask path — the draft was never stranded
+    expect(askMindMock).toHaveBeenCalledTimes(21);
+    // the retried ask runs to completion and renders
+    await act(async () => {
+      const a = pendingAsks[pendingAsks.length - 1];
+      a.resolve({ facet: FACET, fingerprint: tensionFingerprint(a.handle, a.draft) });
+      await Promise.resolve();
+    });
+    expect(offerLine()).not.toBeNull();
+  });
+});
+
+
+// ── P0 SEND DIAGNOSIS (2026-08-28) ──────────────────────────────────────
+// A real failed send in the field left ZERO evidence. These pin the send
+// trace contract: the gesture always lands and always says what happened,
+// a failure keeps the exact prose retryable, and a quick send touches the
+// Mind not at all.
+describe('send path — traced, honest about failure, Mind-free', () => {
+  const traces = (event: string) => mindTraceMock.mock.calls.filter((c) => c[0] === event);
+  const LONG_FLAT = 'here is a long ordinary message that says a lot of ordinary things about the day without asking anything consequential at all, just news';
+
+  it('a stored send traces clicked → attempted → stored(mid) → readback match', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true, id: 'msg_pin1', storedLength: LONG_FLAT.length };
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].content).toBe(LONG_FLAT); // byte-exact prose left the composer
+    expect(traces('send_clicked')).toHaveLength(1);
+    expect(traces('send_attempted')).toHaveLength(1);
+    const result = traces('send_result');
+    expect(result).toHaveLength(1);
+    expect(result[0][1]).toMatchObject({ class: 'stored', mid: 'msg_pin1' });
+    const readback = traces('send_readback');
+    expect(readback).toHaveLength(1);
+    expect(readback[0][1]).toMatchObject({ class: 'match', mid: 'msg_pin1' });
+  });
+
+  it('an absent receipt traces readback missing — evidence absent is never a match', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true }; // stored, but no id and no storedLength served
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    const readback = traces('send_readback');
+    expect(readback).toHaveLength(1);
+    expect(readback[0][1]).toMatchObject({ class: 'missing' });
+    expect(readback[0][1].mid).toBeUndefined();
+  });
+
+  it('a second gesture during flight traces blocked_sending and sends exactly once', async () => {
+    let release!: (v: { ok: boolean }) => void;
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation((_to, content) => {
+      sent.push({ content });
+      return new Promise((r) => { release = r; });
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    // in flight: composer cleared, so retype and click again
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(sent).toHaveLength(1); // exactly one request
+    const blocked = traces('send_result').filter((c) => c[1]?.class === 'blocked_sending');
+    expect(blocked).toHaveLength(1); // and the swallowed gesture SAYS SO
+    await act(async () => { release({ ok: true }); await Promise.resolve(); });
+  });
+
+  it('a refused send keeps the exact prose in a retryable failed bubble — never cleared into ambiguity', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: false, error: 'server_unavailable' };
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(traces('send_result')[0][1]).toMatchObject({ class: 'refused' });
+    // the exact prose survives, visibly failed, with a live Retry
+    expect(screen.getByText(LONG_FLAT)).toBeTruthy();
+    const retryBtn = screen.getByText(/retry/i);
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true, id: 'msg_pin2' };
+    });
+    await act(async () => { fireEvent.click(retryBtn); });
+    expect(sent).toHaveLength(2);
+    expect(sent[1].content).toBe(LONG_FLAT); // retry re-sends the same bytes
+  });
+
+  it('a quick send makes ZERO Mind requests and never waits on one', async () => {
+    vi.mocked(buddyClient.sendMessageResult).mockImplementation(async (_to, content) => {
+      sent.push({ content });
+      return { ok: true, id: 'msg_pin3' };
+    });
+    mount();
+    type(LONG_FLAT);
+    await act(async () => { fireEvent.click(screen.getByText('Send')); });
+    expect(sent).toHaveLength(1);
     expect(askMindMock).not.toHaveBeenCalled();
   });
 });

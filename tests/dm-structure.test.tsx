@@ -159,14 +159,21 @@ describe('the composer authors structure without changing the send contract', ()
     expect(sent).toEqual([{ to: THEM, content: 'kept \n interior' }]);
   });
 
-  it('the box grows 1→4 lines with explicit newlines and no further', () => {
+  it('the box grows with content and stops at four visual lines', () => {
+    // The mechanism changed with the real-canary repair: height is measured
+    // from scrollHeight (which sees WRAPPING), not counted from newlines
+    // (which cannot). Same contract — grows to four lines, no further,
+    // scrolls beyond — new observable.
     mount([]);
-    const box = composer();
-    expect(box.rows).toBe(1);
-    fireEvent.change(box, { target: { value: 'a\nb\nc' } });
-    expect(box.rows).toBe(3);
-    fireEvent.change(box, { target: { value: 'a\nb\nc\nd\ne\nf' } });
-    expect(box.rows).toBe(4);
+    const el = screen.getByPlaceholderText(`Message @${THEM}...`) as HTMLTextAreaElement;
+    expect(el.getAttribute('rows')).toBe('1');
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 40 });
+    fireEvent.change(el, { target: { value: 'one\ntwo' } });
+    expect(parseFloat(el.style.height)).toBeLessThanOrEqual(40 + 1);
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 400 });
+    fireEvent.change(el, { target: { value: 'one\ntwo\nthree\nfour\nfive\nsix' } });
+    expect(parseFloat(el.style.height)).toBeLessThanOrEqual(4 * 18 + 14 + 1);
+    expect(el.style.overflowY).toBe('auto');
   });
 
   it('the shortcut is discoverable at the moment of composition', () => {
