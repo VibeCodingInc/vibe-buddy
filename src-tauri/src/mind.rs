@@ -336,8 +336,12 @@ mod tests {
                 }
                 Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
                 Some(url::Host::Domain(d)) => {
+                    // A trailing dot is the same host to resolvers and to
+                    // urlpattern (round-8: https://*.localhost./* matched) —
+                    // normalize it away before judging.
                     let d = d.to_ascii_lowercase();
-                    d == "localhost" || d.ends_with(".local")
+                    let d = d.trim_end_matches('.');
+                    d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost")
                 }
                 None => false,
             }
