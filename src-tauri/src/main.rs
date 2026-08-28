@@ -611,6 +611,7 @@ fn main() {
             transcript::transcript_signal,
             mind::mind_prime,
             mind::mind_facet,
+            mind::mind_trace,
         ])
         .build(tauri::generate_context!())
         .expect("error while running vibe buddy")

@@ -409,3 +409,31 @@ describe('RETURN — "what changed?" asks once, after the facet actually crossed
     expect(log).not.toHaveBeenCalled();
   });
 });
+
+describe('the Camille defect stays fixed — eligibility is not narrower than the Mind', () => {
+  // The exact failure: a real consequential pause the SERVER would honor,
+  // refused client-side, silence indistinguishable from intelligence.
+  const drafts = [
+    'curious how you think about the memory side of this before i commit the schema',
+    'maybe the archive should live on my own domain but the platform reach is hard to give up',
+    'i keep going back and forth on whether the collector belongs on both machines',
+    'i will probably regret shipping this friday though the demo pressure is real',
+  ];
+  for (const d of drafts) {
+    it(`asks for: "${d.slice(0, 40)}…"`, () => {
+      mount();
+      type(d);
+      tick(2500);
+      expect(askMindMock).toHaveBeenCalledTimes(1);
+      askMindMock.mockClear();
+      cleanup();
+    });
+  }
+
+  it('still refuses obvious non-tensions', () => {
+    mount();
+    type('ok sounds good thanks talk soon have a great rest of your day today');
+    tick(60_000);
+    expect(askMindMock).not.toHaveBeenCalled();
+  });
+});

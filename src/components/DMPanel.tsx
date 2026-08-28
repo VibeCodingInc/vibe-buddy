@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { askMind, looksConsequential, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
+import { askMind, fpTag, looksConsequential, mindTrace, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
 import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
@@ -253,10 +253,21 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setMindOffer(null);
       setMindReveal(false);
     }
-    if (!looksConsequential(input)) return;
+    if (!looksConsequential(input)) {
+      if (input.trim().length >= 40) {
+        // long enough to matter, judged ineligible — the Camille class.
+        mindTrace('ineligible', { draft_bytes: new TextEncoder().encode(input).length });
+      }
+      return;
+    }
     const fp = tensionFingerprint(chatWith, input);
-    if (mindDismissedFp.current.has(fp)) return; // dismissed = dismissed
+    if (mindDismissedFp.current.has(fp)) {
+      mindTrace('suppressed_dismissed', { fp: fpTag(fp) });
+      return; // dismissed = dismissed
+    }
+    mindTrace('timer_scheduled', { fp: fpTag(fp) });
     mindAskTimer.current = window.setTimeout(() => {
+      mindTrace('timer_fired', { fp: fpTag(fp) });
       void askMind(chatWith, input).then((res) => {
         if (!res || res.facet.silence) return;
         // THE DISCARD RULE: render only if this exact tension is current.
@@ -264,7 +275,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
             setMindOffer(res.facet);
             setMindOfferFp(res.fingerprint);
-          } // else: discarded silently — the human moved on
+          } else {
+            mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
+          }
           return cur;
         });
       });

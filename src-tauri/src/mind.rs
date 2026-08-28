@@ -154,7 +154,50 @@ pub async fn mind_facet(handle: String, draft: String) -> Option<Value> {
         .flatten()
 }
 
-#[cfg(test)]
+/// METADATA-ONLY composer tracing (Camille defect, 2026-08-28): every stage
+/// of the ask path leaves one line in ~/.vibe/mind/client-trace.local.jsonl
+/// so "the client never asked" versus "the Mind chose silence" versus
+/// "unreachable" are three DIFFERENT diagnostics instead of one identical
+/// nothing. NEVER the draft, the context, or any text — event names, byte
+/// counts, a short thread fingerprint, and response classes only.
+#[tauri::command]
+pub fn mind_trace(event: String, meta: Value) {
+    if event.len() > 64 {
+        return;
+    }
+    // refuse anything that could smuggle prose: numbers/bools/short ids only
+    fn clean(v: &Value) -> bool {
+        match v {
+            Value::Number(_) | Value::Bool(_) | Value::Null => true,
+            Value::String(s) => s.len() <= 24,
+            _ => false,
+        }
+    }
+    let ok = meta.as_object().map(|o| o.len() <= 8 && o.values().all(clean)).unwrap_or(false);
+    if !ok {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else { return };
+    let path = home.join(".vibe/mind/client-trace.local.jsonl");
+    // bounded: a diagnostics file must never become a corpus
+    if fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+        let _ = fs::remove_file(&path);
+    }
+    let line = serde_json::json!({
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        "event": event,
+        "meta": meta,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
+#[cfg(test)]#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;

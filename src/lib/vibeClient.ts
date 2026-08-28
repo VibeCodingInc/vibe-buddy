@@ -315,6 +315,16 @@ export function principalFromToken(token: string | null | undefined): string | n
   }
 }
 
+/**
+ * THE served-thread decoder — production and tests share it. GET
+ * /api/v2/threads/:id serves { thread_id, with, messages }; `with` is the
+ * OTHER participant, computed server-side for the authed handle.
+ */
+export function peerFromThreadResponse(data: any): string | null {
+  const peer = data?.with ?? data?.thread?.with;
+  return typeof peer === 'string' && peer.trim() ? peer.trim().toLowerCase() : null;
+}
+
 export type ThoughtInviteResult =
   | { kind: 'created'; shareUrl: string; namedFor: string; expiresAt: string }
   | { kind: 'principal_required'; label: string; url: string; hint: string }
@@ -392,6 +402,13 @@ class BuddyClient {
    * having opened.
    */
   async reauthorizePrincipal(timeoutMs = 180_000): Promise<boolean> {
+    // SNAPSHOT FIRST (review P2): success must be THIS round trip's doing.
+    // Without it, any principal-bearing token already on disk — including a
+    // stale one — reports success before the callback even lands.
+    let priorToken: string | null = null;
+    try {
+      priorToken = (await invoke<AuthStatus>('check_auth_status'))?.token ?? null;
+    } catch { /* absent prior is fine — any principal-bearing token is new */ }
     const started = await this.login();
     if (!started.success) return false;
     const deadline = Date.now() + timeoutMs;
@@ -399,7 +416,7 @@ class BuddyClient {
       await new Promise((r) => setTimeout(r, 2000));
       try {
         const status = await invoke<AuthStatus>('check_auth_status');
-        if (status?.token && principalFromToken(status.token)) {
+        if (status?.token && status.token !== priorToken && principalFromToken(status.token)) {
           this.authToken = status.token;
           if (status.handle) this.handle = status.handle;
           return true;
@@ -1024,9 +1041,10 @@ class BuddyClient {
 
   /**
    * The other participant of a served thread id — the /t/{thread_id} landing
-   * a redemption redirects to (#320). Buddy navigates threads by PEER, so a
-   * /t/ link opens by resolving the id through the served thread; null when
-   * the thread is not served to this principal (never a guess).
+   * a redemption redirects to (#320). The endpoint serves
+   * { thread_id, with, messages } and `with` IS the peer, verified
+   * server-side as a participant — never a guess. null when the thread is
+   * not served to this principal.
    */
   async resolveThreadPeer(threadId: string): Promise<string | null> {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(threadId)) return null;
@@ -1035,17 +1053,13 @@ class BuddyClient {
         method: 'GET',
         url: `${API_URL}/v2/threads/${encodeURIComponent(threadId)}`,
       });
-      const t = res.data?.thread || res.data;
-      const me = (this.handle || '').toLowerCase();
-      for (const key of ['participant_a', 'participant_b']) {
-        const p = (t?.[key] || '').toLowerCase();
-        if (p && p !== me) return p;
-      }
-      return null;
+      if (!res.ok) return null;
+      return peerFromThreadResponse(res.data);
     } catch {
       return null;
     }
   }
+
 
   async getInviteLink(): Promise<string> {
     const fallback = `https://www.slashvibe.dev/invite/${this.handle || ''}`;

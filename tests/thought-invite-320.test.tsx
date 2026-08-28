@@ -19,6 +19,7 @@ import {
   decodeThoughtInvite,
   normalizeGithub,
   principalFromToken,
+  peerFromThreadResponse,
 } from '../src/lib/vibeClient';
 import { routeDeepLink } from '../src/lib/deepLink';
 import { ThoughtInvite } from '../src/components/list/ThoughtInvite';
@@ -195,5 +196,16 @@ describe('ThoughtInvite composer — a thought FOR one person, or nothing', () =
       expect(screen.getByText(/still does not prove your principal/)).toBeTruthy()
     );
     expect(inviteMock).toHaveBeenCalledTimes(1); // no blind retry
+  });
+});
+
+describe('peerFromThreadResponse — the REAL served shape (re-review P1)', () => {
+  it('reads `with` — the peer the server computed for the authed handle', () => {
+    expect(
+      peerFromThreadResponse({ thread_id: 'th_1', with: 'WanderingStan', messages: [] })
+    ).toBe('wanderingstan');
+    // the OLD decode read participant_a/b — fields this endpoint never serves
+    expect(peerFromThreadResponse({ participant_a: 'a', participant_b: 'b' })).toBeNull();
+    expect(peerFromThreadResponse({})).toBeNull();
   });
 });
