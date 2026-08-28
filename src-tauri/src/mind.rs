@@ -313,11 +313,22 @@ mod tests {
             }
         }
         fn scan_text(body: &str, path: &std::path::Path) {
-            let mut rest = body;
+            // Case-insensitive, unescape-first (round-5 P2): Tauri
+            // deserializes before use, so HTTP:// and JSON/TOML escape
+            // sequences (\u0068ttp, \x68) canonicalize into live grants.
+            // Judge the same canonical text Tauri would.
+            let unescaped = body
+                .replace("\\u0068", "h").replace("\\u0048", "H")
+                .replace("\\u0074", "t").replace("\\u0054", "T")
+                .replace("\\x68", "h").replace("\\x48", "H")
+                .replace("\\x74", "t").replace("\\x54", "T")
+                .replace("\\/", "/");
+            let lower = unescaped.to_lowercase();
+            let mut rest: &str = &lower;
             while let Some(i) = rest.find("http") {
                 let tail = &rest[i..];
                 let end = tail
-                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ']' || c == '}')
+                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ']' || c == '}' || c == '\\')
                     .unwrap_or(tail.len());
                 let token = &tail[..end];
                 assert!(
