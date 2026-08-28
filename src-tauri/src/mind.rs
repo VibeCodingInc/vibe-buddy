@@ -22,7 +22,19 @@ use std::time::Duration;
 // own server) must be EXPLICITLY activated: a private, mode-checked local
 // file naming the endpoint — same posture as the bearer token, stored for
 // this principal on this machine, never compiled into the product.
-const MIND_LOOPBACK: &str = "http://127.0.0.1:7788";
+// NO ORIGIN IS COMPILED AT ALL (round-2 P1): even loopback-by-default let
+// any local process bind 127.0.0.1:7788 and receive the bearer and a private
+// draft. The ONLY origin ever dialed is the explicitly-activated endpoint
+// from ~/.vibe/mind/endpoint (0600, no symlink, private-range IPv4) — the
+// awakening writes that file next to the token it mints, so a working local
+// Mind and its activation are created as one act. No file, no dial: an
+// unactivated machine's Mind path is simply unreachable, which is the
+// correct default for every machine that never opted in.
+//
+// Residual risk, stated honestly: if the activated local server dies and a
+// hostile local process grabs the port before launchd (KeepAlive) respawns
+// it, one request window exists. That requires local code execution, at
+// which point the token file itself is readable anyway.
 
 fn endpoint_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".vibe/mind/endpoint"))
@@ -87,13 +99,7 @@ fn personal_endpoint_from(path: &Path) -> Option<String> {
 }
 
 fn mind_origins() -> Vec<String> {
-    let mut origins = vec![MIND_LOOPBACK.to_owned()];
-    if let Some(personal) = personal_endpoint() {
-        if personal != MIND_LOOPBACK {
-            origins.push(personal);
-        }
-    }
-    origins
+    personal_endpoint().into_iter().collect()
 }
 const MAX_HANDLE_BYTES: usize = 64;
 const MAX_DRAFT_BYTES: usize = 4_000;
@@ -281,11 +287,27 @@ mod tests {
     }
 
     #[test]
-    fn canonical_binary_compiles_no_endpoint_but_loopback() {
-        // The ruling on #12: the canonical binary may NEVER fall back to
-        // another person's endpoint. Loopback is the only compiled origin;
-        // anything else requires explicit local activation.
-        assert_eq!(MIND_LOOPBACK, "http://127.0.0.1:7788");
+    fn no_capability_grants_the_renderer_a_mind_origin() {
+        // Round-2 P1: a tracked founder capability auto-enabled plugin-http
+        // fetches straight from the RENDERER to the Tailnet, bypassing every
+        // native restriction. Capabilities are Tauri-auto-enabled, so the
+        // repo may never carry one that names a private address.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let body = fs::read_to_string(entry.path()).unwrap_or_default();
+            assert!(!body.contains("100.121.205.111") && !body.contains("7788"),
+                    "capability {:?} grants a Mind origin to the renderer", entry.path());
+        }
+    }
+
+    #[test]
+    fn canonical_binary_compiles_no_endpoint_at_all() {
+        // Round-2 ruling: NOTHING is dialed without explicit activation —
+        // not even loopback, which any local process could squat. No
+        // activation file = no origins = unreachable, silently.
+        let dir = std::env::temp_dir().join(format!("vibe-noact-{}", std::process::id()));
+        let _ = fs::remove_file(&dir);
+        assert!(personal_endpoint_from(&dir).is_none(), "no file, no dial");
         // Scan PRODUCTION source only — the test fixtures below legitimately
         // use a Tailnet address as a valid explicitly-activated example.
         let src = include_str!("mind.rs");
