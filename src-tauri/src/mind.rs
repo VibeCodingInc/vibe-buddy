@@ -287,16 +287,50 @@ mod tests {
     }
 
     #[test]
-    fn no_capability_grants_the_renderer_a_mind_origin() {
-        // Round-2 P1: a tracked founder capability auto-enabled plugin-http
-        // fetches straight from the RENDERER to the Tailnet, bypassing every
-        // native restriction. Capabilities are Tauri-auto-enabled, so the
-        // repo may never carry one that names a private address.
+    fn no_capability_grants_the_renderer_a_private_origin() {
+        // Round-2 P1, hardened round-3: a tracked capability auto-enables
+        // renderer fetches, so the repo may never carry one that grants ANY
+        // private-range HTTP origin — not just one literal address. Parse
+        // every string in every capability as a URL and judge the host
+        // SEMANTICALLY with the same parser the transport uses.
+        fn private_http(sval: &str) -> bool {
+            let candidate = sval.trim().trim_end_matches("/*").trim_end_matches('*');
+            let Ok(u) = url::Url::parse(candidate) else { return false };
+            if u.scheme() != "http" && u.scheme() != "https" {
+                return false;
+            }
+            match u.host() {
+                Some(url::Host::Ipv4(ip)) => {
+                    let o = ip.octets();
+                    o[0] == 127
+                        || o[0] == 10
+                        || (o[0] == 192 && o[1] == 168)
+                        || (o[0] == 172 && (16..=31).contains(&o[1]))
+                        || (o[0] == 100 && (64..=127).contains(&o[1]))
+                }
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".local"),
+                None => false,
+            }
+        }
+        fn walk(v: &Value, path: &std::path::Path) {
+            match v {
+                Value::String(s) => assert!(
+                    !private_http(s),
+                    "capability {:?} grants the renderer a private origin: {}",
+                    path, s
+                ),
+                Value::Array(a) => a.iter().for_each(|x| walk(x, path)),
+                Value::Object(o) => o.values().for_each(|x| walk(x, path)),
+                _ => {}
+            }
+        }
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
         for entry in fs::read_dir(&dir).unwrap().flatten() {
             let body = fs::read_to_string(entry.path()).unwrap_or_default();
-            assert!(!body.contains("100.121.205.111") && !body.contains("7788"),
-                    "capability {:?} grants a Mind origin to the renderer", entry.path());
+            if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+                walk(&parsed, &entry.path());
+            }
         }
     }
 
