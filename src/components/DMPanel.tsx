@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { askMind, looksConsequential, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
+import { askMind, fpTag, looksConsequential, mindTrace, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
 import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
@@ -103,6 +103,19 @@ export function renderBodyWithHandles(
   }
   parts.push(body.slice(last));
   return onOpen ? parts.filter((p) => p !== '') : [body];
+}
+
+// A redemption lands its redeemer at /t/{thread_id} (#320) — so when such a
+// link appears inside a message body, the honest render is the THREAD it
+// names, not a jump to a browser. Extraction only; resolution happens on tap
+// through the served thread (vibeClient.resolveThreadPeer), never a guess.
+const THREAD_LINK = /https?:\/\/(?:www\.)?slashvibe\.dev\/t\/([A-Za-z0-9_-]{1,64})/g;
+export function threadLinksIn(body: string): Array<{ threadId: string; text: string }> {
+  const out: Array<{ threadId: string; text: string }> = [];
+  for (const m of body.matchAll(THREAD_LINK)) {
+    out.push({ threadId: m[1], text: m[0] });
+  }
+  return out;
 }
 
 // A thread can span months, so a bare time ("1:56 PM") can't tell today's
@@ -240,10 +253,21 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setMindOffer(null);
       setMindReveal(false);
     }
-    if (!looksConsequential(input)) return;
+    if (!looksConsequential(input)) {
+      if (input.trim().length >= 40) {
+        // long enough to matter, judged ineligible — the Camille class.
+        mindTrace('ineligible', { draft_bytes: new TextEncoder().encode(input).length });
+      }
+      return;
+    }
     const fp = tensionFingerprint(chatWith, input);
-    if (mindDismissedFp.current.has(fp)) return; // dismissed = dismissed
+    if (mindDismissedFp.current.has(fp)) {
+      mindTrace('suppressed_dismissed', { fp: fpTag(fp) });
+      return; // dismissed = dismissed
+    }
+    mindTrace('timer_scheduled', { fp: fpTag(fp) });
     mindAskTimer.current = window.setTimeout(() => {
+      mindTrace('timer_fired', { fp: fpTag(fp) });
       void askMind(chatWith, input).then((res) => {
         if (!res || res.facet.silence) return;
         // THE DISCARD RULE: render only if this exact tension is current.
@@ -251,7 +275,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
             setMindOffer(res.facet);
             setMindOfferFp(res.fingerprint);
-          } // else: discarded silently — the human moved on
+          } else {
+            mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
+          }
           return cur;
         });
       });
@@ -843,8 +869,34 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                     >
                       {part.text}
                     </span>
-                  ),
+                  )
                 )}
+                {threadLinksIn(msg.content).map((tl, i) => (
+                  <span
+                    key={`t-${i}`}
+                    role="link"
+                    tabIndex={0}
+                    onClick={async () => {
+                      const peer = await buddyClient.resolveThreadPeer(tl.threadId);
+                      if (peer) onOpenThread?.(peer);
+                    }}
+                    onKeyDown={async (e) => {
+                      if (e.key !== 'Enter') return;
+                      const peer = await buddyClient.resolveThreadPeer(tl.threadId);
+                      if (peer) onOpenThread?.(peer);
+                    }}
+                    style={{
+                      display: 'block',
+                      marginTop: 4,
+                      fontSize: 11,
+                      color: color.dim,
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    open this thread here ›
+                  </span>
+                ))}
               </div>
               <div
                 style={{

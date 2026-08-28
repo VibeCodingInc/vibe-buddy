@@ -65,8 +65,30 @@ export interface MindFacet {
 export function looksConsequential(draft: string): boolean {
   const d = draft.trim();
   if (d.length < 40 || d.split(/\s+/).length < 8) return false;
-  return /(\bshould\b.{0,60}\bor\b|\bwhether\b|\btorn\b|\bdeciding\b|\bdecide\b|\bnot sure\b|\bunsure\b|\bwondering\b|\bwhat if\b|\bi'?ll\b|\bback and forth\b|\?\s*$)/i.test(d);
+  // MIRRORS the runtime's detect_tension grammar (decision / contradiction /
+  // uncertainty / possibility / promise / open question). The Camille defect
+  // was this gate being NARROWER than the server's: a draft the Mind would
+  // have honored ("curious how…", "maybe…", a but-clause) never left the
+  // composer, and the silence was indistinguishable from an intelligent
+  // pass. This gate exists only to save round-trips on obvious non-tensions;
+  // when in doubt it ASKS — the server's gate is authoritative.
+  return TENSION_RX.test(d);
 }
+
+/** One expression, kept deliberately in sync with mind.py's TENSION table. */
+export const TENSION_RX = new RegExp(
+  [
+    "\\bshould\\b.{0,60}\\bor\\b", "\\btorn\\b", "\\bdecid(?:e|ing)\\b", "\\bversus\\b",
+    "\\bback and forth\\b",
+    "\\bbut\\b", "\\bhowever\\b", "\\bon the other hand\\b", "\\bthough\\b", "\\bexcept\\b", "\\bdisagree\\b",
+    "\\bnot sure\\b", "\\bunsure\\b", "\\bwondering\\b", "\\bunclear\\b", "\\bdon'?t know\\b",
+    "\\bno idea\\b", "\\bmaybe\\b", "\\bmight be\\b", "\\bcurious\\b", "\\bstruggling\\b",
+    "\\bwhat if\\b", "\\bcould we\\b", "\\bimagine\\b", "\\bsuppose\\b", "\\bworth trying\\b",
+    "\\bi'?ll\\b", "\\bi will\\b", "\\blet me\\b",
+    "\\?\\s*$",
+  ].join("|"),
+  "i"
+);
 
 /** Stable fingerprint of (recipient, draft-tension). The result is rendered
  * ONLY if the fingerprint at arrival equals the fingerprint at request —
@@ -74,6 +96,20 @@ export function looksConsequential(draft: string): boolean {
  * case wobble don't count as "moved on". */
 export function tensionFingerprint(handle: string, draft: string): string {
   return handle + '' + draft.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Metadata-only tracing (Camille defect): stage names, byte counts, and a
+ * short fingerprint hash — NEVER text. Fire-and-forget; tracing must never
+ * affect the path it observes. */
+export function mindTrace(event: string, meta: Record<string, number | string | boolean> = {}): void {
+  void invoke('mind_trace', { event, meta }).catch(() => {});
+}
+
+/** Short non-reversible tag for correlating trace lines about one tension. */
+export function fpTag(fingerprint: string): string {
+  let h = 0;
+  for (let i = 0; i < fingerprint.length; i++) h = ((h << 5) - h + fingerprint.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }
 
 let inFlight: AbortController | null = null;
@@ -157,6 +193,7 @@ export async function askMind(
   const ctrl = new AbortController();
   inFlight = ctrl;
   const fingerprint = tensionFingerprint(handle, draft);
+  mindTrace('request_attempted', { fp: fpTag(fingerprint), draft_bytes: new TextEncoder().encode(draft).length });
   const timer = setTimeout(() => ctrl.abort(), 90_000);
   try {
     const facet = await Promise.race([
@@ -165,9 +202,19 @@ export async function askMind(
         ctrl.signal.addEventListener('abort', () => resolve(null), { once: true });
       }),
     ]);
-    if (!facet) return null;
+    if (!facet) {
+      // null from the native layer = REFUSED/UNREACHABLE — a different fact
+      // from the Mind answering with silence, and the trace keeps them apart.
+      mindTrace('response', { fp: fpTag(fingerprint), class: 'native_null' });
+      return null;
+    }
+    mindTrace('response', {
+      fp: fpTag(fingerprint),
+      class: facet.silence ? 'silence' : (facet.offer_kind || 'offer'),
+    });
     return { facet, fingerprint };
   } catch {
+    mindTrace('response', { fp: fpTag(fingerprint), class: 'invoke_error' });
     return null; // silence — never an error state in the composer
   } finally {
     clearTimeout(timer);

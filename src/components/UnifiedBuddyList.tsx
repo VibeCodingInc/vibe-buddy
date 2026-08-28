@@ -18,6 +18,7 @@ import { MySessionsSection, MySessionRow } from './list/MySessions';
 import { UserRow, SessionRow } from './list/rows';
 import { MyPresenceCard } from './list/MyPresenceCard';
 import { OfflineThreadRow } from './list/OfflineThreadRow';
+import { ThoughtInvite } from './list/ThoughtInvite';
 import { avatarFailed, menuItemStyle, TEST_HANDLE_PREFIXES, isTestAccount, LEGACY_AGENT_HANDLES, isBroadcastOnly, isUnproven, presenceDotColor, isAgent, MACHINE_ONELINERS, formatDuration, formatTime, Avatar, hasDNA } from './list/shared';
 import { formatAgo, formatModel, pressOnKey } from './list/format';
 
@@ -125,6 +126,8 @@ export default function UnifiedBuddyList({
     }
   };
   const [inviteCopyState, setInviteCopyState] = useState<'copied' | 'failed' | null>(null);
+  // The invitation ritual (#320): a thought-bearing, optionally named invite.
+  const [thoughtInviteOpen, setThoughtInviteOpen] = useState(false);
   // Resolved lazily so the empty state can show a real tracked /join link
   // instead of the bare referral page. Starts as the fallback page.
   const [inviteLink, setInviteLink] = useState(`https://www.slashvibe.dev/invite/${handle}`);
@@ -1066,6 +1069,15 @@ export default function UnifiedBuddyList({
               <button
                 type="button"
                 style={{ ...menuItemStyle, color: color.dim }}
+                onClick={() => { setShowMenu(false); setThoughtInviteOpen(true); }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = color.line)}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                Invite with a thought…
+              </button>
+              <button
+                type="button"
+                style={{ ...menuItemStyle, color: color.dim }}
                 onClick={() => { setShowMenu(false); onSignOut(); }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = color.line)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
@@ -1140,6 +1152,11 @@ export default function UnifiedBuddyList({
           )}
         </div>
       </div>
+
+      {/* The invitation ritual (#320): thought first, person named, link
+          second. Renders directly under the header — one panel, dismissed
+          back to nothing; no tab, no modal system. */}
+      {thoughtInviteOpen && <ThoughtInvite onClose={() => setThoughtInviteOpen(false)} />}
 
       {/* Notification offer — explains the value, then asks the OS. */}
       {notifyOffer && (
@@ -1562,7 +1579,7 @@ export default function UnifiedBuddyList({
               }}
             >
               {inviteCopyState === 'copied'
-                ? 'Copied!'
+                ? 'Copied'
                 : inviteCopyState === 'failed'
                   ? 'Copy failed — select the link below'
                   : 'Copy invite link'}
@@ -1883,7 +1900,7 @@ export default function UnifiedBuddyList({
                   }}
                 >
                   {inviteCopyState === 'copied'
-                    ? 'Copied!'
+                    ? 'Copied'
                     : inviteCopyState === 'failed'
                       ? 'Copy failed'
                       : 'Invite someone to /vibe'}

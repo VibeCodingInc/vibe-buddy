@@ -404,6 +404,7 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
@@ -610,6 +611,7 @@ fn main() {
             transcript::transcript_signal,
             mind::mind_prime,
             mind::mind_facet,
+            mind::mind_trace,
         ])
         .build(tauri::generate_context!())
         .expect("error while running vibe buddy")
