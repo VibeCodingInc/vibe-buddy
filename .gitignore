@@ -18,3 +18,4 @@ mockups/
 *.p8
 .claude/settings.local.json
 package-lock.json
+src-tauri/capabilities/founder.local.json

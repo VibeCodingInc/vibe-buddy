@@ -1,38 +1,52 @@
 import { useState } from 'react';
-import { open } from '@tauri-apps/plugin-shell';
-import { buddyClient } from '../../lib/vibeClient';
+import { buddyClient, normalizeGithub, type ThoughtInviteResult } from '../../lib/vibeClient';
 import { copyText } from '../../lib/clipboard';
 import { color } from '../../lib/tokens';
 
 /**
- * The invitation ritual (#320): every invitation carries a thought, and may
- * name the ONE person it is for. The thought is the inviter's EXACT prose —
- * it materializes as their first message when the invitation is redeemed, so
- * this composer sends nothing and promises nothing beyond what the server
- * accepted.
+ * The invitation ritual (#320 + #322): a thought, FOR one person. Both halves
+ * are required here — this surface never falls through to a generic or
+ * thoughtless invitation (the plain tracked link lives elsewhere). The
+ * thought travels byte-for-byte as typed.
  *
- * The refusal that matters is `principal_required`: a session that proves a
- * handle but not a principal cannot authorize a delayed send. That refusal
- * arrives STRUCTURED, and it renders here as its action — one button that
- * opens the reauth URL — never as a raw error string.
+ * Success is the SERVED truth: carries_thought, named_for matching the
+ * person named, and expires_at — displayed as who it is for and when it
+ * lapses. Anything less renders as an honest incompletion.
+ *
+ * principal_required completes the REAL round trip: the existing native
+ * OAuth authority runs, the refreshed credential lands in the local store,
+ * the principal claim is verified, and only then does the create retry.
  */
 export function ThoughtInvite({ onClose }: { onClose: () => void }) {
   const [thought, setThought] = useState('');
   const [forGithub, setForGithub] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<
-    | { kind: 'created'; shareUrl: string; carriesThought: boolean; copied: boolean }
-    | { kind: 'principal_required'; label: string; url: string; hint: string }
-    | { kind: 'refused'; error: string }
-    | { kind: 'unreachable' }
-    | null
-  >(null);
+  const [busy, setBusy] = useState<false | 'creating' | 'reauth'>(false);
+  const [outcome, setOutcome] = useState<(ThoughtInviteResult & { copied?: boolean }) | null>(null);
+
+  const ready = Boolean(thought.trim()) && Boolean(normalizeGithub(forGithub));
 
   const create = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (busy || !ready) return;
+    setBusy('creating');
     setOutcome(null);
-    const res = await buddyClient.createThoughtInvite(thought, forGithub);
+    let res = await buddyClient.createThoughtInvite(thought, forGithub);
+    if (res.kind === 'principal_required') {
+      // The real round trip — native OAuth, credential stored locally,
+      // principal VERIFIED from the token's own claim — then one retry.
+      setOutcome(res);
+      setBusy('reauth');
+      const proved = await buddyClient.reauthorizePrincipal();
+      if (proved) {
+        res = await buddyClient.createThoughtInvite(thought, forGithub);
+      } else {
+        setBusy(false);
+        setOutcome({
+          kind: 'refused',
+          error: 'The refreshed session still does not prove your principal. Nothing was created.',
+        });
+        return;
+      }
+    }
     if (res.kind === 'created') {
       const copied = await copyText(res.shareUrl);
       setOutcome({ ...res, copied });
@@ -55,6 +69,11 @@ export function ThoughtInvite({ onClose }: { onClose: () => void }) {
     outline: 'none',
     boxSizing: 'border-box',
   } as const;
+
+  const expiresLine = (iso: string) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
 
   return (
     <div style={{ padding: '10px 14px', borderBottom: `1px solid ${color.panel}`, flexShrink: 0 }}>
@@ -80,7 +99,7 @@ export function ThoughtInvite({ onClose }: { onClose: () => void }) {
         style={{ ...field, resize: 'vertical', marginBottom: 8 }}
       />
 
-      <div style={{ ...label, marginBottom: 2 }}>WHO IS THIS FOR? — GitHub username, nontransferable (optional)</div>
+      <div style={{ ...label, marginBottom: 2 }}>WHO IS THIS FOR — GitHub username, nontransferable</div>
       <input
         value={forGithub}
         onChange={(e) => setForGithub(e.target.value)}
@@ -91,7 +110,8 @@ export function ThoughtInvite({ onClose }: { onClose: () => void }) {
       <button
         type="button"
         onClick={create}
-        disabled={busy}
+        disabled={!!busy || !ready}
+        title={ready ? undefined : 'This invitation needs both the thought and the person it is for.'}
         style={{
           background: color.blue,
           color: color.ink,
@@ -100,46 +120,26 @@ export function ThoughtInvite({ onClose }: { onClose: () => void }) {
           padding: '6px 14px',
           fontSize: '12px',
           fontWeight: 600,
-          cursor: busy ? 'default' : 'pointer',
-          opacity: busy ? 0.6 : 1,
+          cursor: busy || !ready ? 'default' : 'pointer',
+          opacity: busy || !ready ? 0.6 : 1,
         }}
       >
-        {busy ? 'Creating…' : 'Create invitation'}
+        {busy === 'creating' ? 'Creating…' : busy === 'reauth' ? 'Refreshing your session…' : 'Create invitation'}
       </button>
 
       {outcome?.kind === 'created' && (
         <div style={{ marginTop: 8, fontSize: '11px', color: color.dim }}>
-          {outcome.copied ? 'Link copied. ' : ''}
-          {outcome.carriesThought
-            ? 'It carries your thought — they land inside it.'
-            : 'Created without the thought (none accepted).'}
+          {outcome.copied ? 'Copied. ' : ''}
+          For @{outcome.namedFor} — carries your thought, lapses {expiresLine(outcome.expiresAt)}.
           <div style={{ color: color.faint, wordBreak: 'break-all', marginTop: 2 }}>
             {outcome.shareUrl.replace(/^https?:\/\//, '')}
           </div>
         </div>
       )}
 
-      {outcome?.kind === 'principal_required' && (
-        <div style={{ marginTop: 8 }}>
-          <button
-            type="button"
-            onClick={() => { void open(outcome.url); }}
-            style={{
-              background: color.panel,
-              color: color.ink,
-              border: `1px solid ${color.blue}`,
-              borderRadius: '6px',
-              padding: '6px 14px',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            {outcome.label}
-          </button>
-          <div style={{ fontSize: '10.5px', color: color.faint, marginTop: 4 }}>
-            {outcome.hint} Then create the invitation again.
-          </div>
+      {outcome?.kind === 'principal_required' && busy === 'reauth' && (
+        <div style={{ marginTop: 8, fontSize: '10.5px', color: color.faint }}>
+          {outcome.hint} Finish signing in — the invitation will retry itself.
         </div>
       )}
 

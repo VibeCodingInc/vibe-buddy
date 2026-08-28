@@ -1579,7 +1579,7 @@ export default function UnifiedBuddyList({
               }}
             >
               {inviteCopyState === 'copied'
-                ? 'Copied!'
+                ? 'Copied'
                 : inviteCopyState === 'failed'
                   ? 'Copy failed — select the link below'
                   : 'Copy invite link'}
@@ -1900,7 +1900,7 @@ export default function UnifiedBuddyList({
                   }}
                 >
                   {inviteCopyState === 'copied'
-                    ? 'Copied!'
+                    ? 'Copied'
                     : inviteCopyState === 'failed'
                       ? 'Copy failed'
                       : 'Invite someone to /vibe'}

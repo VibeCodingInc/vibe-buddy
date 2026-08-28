@@ -6,6 +6,8 @@ import { getCodingDNA, dnaToPresencePayload } from './lib/contextExtractor';
 import { getPresencePrefs, setPresencePrefs, subscribePresencePrefs, type PresencePrefs, type PresenceBroadcast, type OfflineRetraction } from './lib/presencePrefs';
 import { readSignals, wantsYou, signalLine, transcriptJoinable, type SessionSignal } from './lib/transcript';
 import { checkSessionAlerts, resetSessionAlertState, setNotificationOwner } from './lib/notifications';
+import { routeDeepLink } from './lib/deepLink';
+import { onOpenUrl, getCurrent as getCurrentDeepLink } from '@tauri-apps/plugin-deep-link';
 import { listen } from '@tauri-apps/api/event';
 import { resetArrivals } from './lib/notifications';
 import { getRememberedCall, forgetCall, type RememberedCall } from './lib/callMemory';
@@ -318,6 +320,36 @@ export default function App() {
   useEffect(() => {
     if (!handle) return;
     invoke<McpStatus>('check_mcp_status').then(setMcpStatus).catch(() => {});
+  }, [handle]);
+
+  // THE deep-link entry path (#320): a redemption lands at /t/{thread_id},
+  // and the recipient finishes INSIDE that thread — vibe://t/{id} resolves
+  // the served thread to its peer and opens the conversation. Covers both a
+  // cold launch (getCurrent) and a running app (onOpenUrl).
+  useEffect(() => {
+    if (!handle) return;
+    let disposed = false;
+    const follow = async (urls: string[] | null | undefined) => {
+      for (const raw of urls || []) {
+        const route = routeDeepLink(raw);
+        if (!route || disposed) continue;
+        if (route.kind === 'dm') {
+          setView({ type: 'dm', chatWith: route.handle });
+          return;
+        }
+        if (route.kind === 'thread') {
+          const peer = await buddyClient.resolveThreadPeer(route.threadId);
+          if (peer && !disposed) setView({ type: 'dm', chatWith: peer });
+          return;
+        }
+      }
+    };
+    getCurrentDeepLink().then(follow).catch(() => {});
+    const unlisten = onOpenUrl((urls) => { void follow(urls); });
+    return () => {
+      disposed = true;
+      void unlisten.then((fn) => fn()).catch(() => {});
+    };
   }, [handle]);
 
   // Read the running version and the real OS once, for the problem report.

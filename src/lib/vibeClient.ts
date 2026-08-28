@@ -293,6 +293,74 @@ export interface LiveSession {
   guestEnabled?: boolean;
 }
 
+
+/** GitHub-login normalization mirroring the server: trim, lowercase, strip one leading @. */
+export function normalizeGithub(raw: string | null | undefined): string {
+  let v = String(raw ?? '').trim().toLowerCase();
+  if (v.startsWith('@')) v = v.slice(1);
+  return v;
+}
+
+/** The principal a token PROVES, from its own claim — null for handle-only. */
+export function principalFromToken(token: string | null | undefined): string | null {
+  try {
+    const part = String(token || '').split('.')[1];
+    if (!part) return null;
+    const claims = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof claims.principal_id === 'string' && claims.principal_id
+      ? claims.principal_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export type ThoughtInviteResult =
+  | { kind: 'created'; shareUrl: string; namedFor: string; expiresAt: string }
+  | { kind: 'principal_required'; label: string; url: string; hint: string }
+  | { kind: 'refused'; error: string }
+  | { kind: 'unreachable' };
+
+/**
+ * THE decoder — production and tests share this exact function, so a test
+ * cannot pass while the product regresses. Success requires ALL served
+ * truths (#322): carries_thought true, named_for matching the normalized
+ * intended recipient, expires_at present.
+ */
+export function decodeThoughtInvite(
+  ok: boolean,
+  data: any,
+  intendedGithub: string
+): ThoughtInviteResult {
+  if (data?.code === 'principal_required' && data?.action?.url) {
+    return {
+      kind: 'principal_required',
+      label: data.action.label || 'Refresh your /vibe session',
+      url: data.action.url,
+      hint: data.action.hint || data.error || '',
+    };
+  }
+  if (ok && data?.share_url) {
+    const namedFor = normalizeGithub(data.named_for);
+    const intended = normalizeGithub(intendedGithub);
+    if (data.carries_thought === true && namedFor && namedFor === intended && data.expires_at) {
+      return { kind: 'created', shareUrl: data.share_url, namedFor, expiresAt: data.expires_at };
+    }
+    // A link exists but the ritual did not complete as intended — say
+    // exactly which served truth is missing; never celebrate.
+    const missing = data.carries_thought !== true
+      ? 'the server did not accept the thought'
+      : !namedFor || namedFor !== intended
+        ? 'the server did not bind it to the person you named'
+        : 'the server did not state when it expires';
+    return { kind: 'refused', error: `The invitation was not created as intended — ${missing}. Nothing to share yet.` };
+  }
+  if (typeof data?.error === 'string' && data.error) {
+    return { kind: 'refused', error: data.error };
+  }
+  return { kind: 'unreachable' };
+}
+
 class BuddyClient {
   private handle: string | null = null;
   private authToken: string | null = null;
@@ -314,6 +382,31 @@ class BuddyClient {
       console.warn('checkAuth error:', e);
       return { authenticated: false, handle: null, token: null };
     }
+  }
+
+  /**
+   * The REAL reauth round trip (#320 review finding 3): the existing native
+   * OAuth authority (start_login -> browser -> Rust callback -> auth.json),
+   * then poll the stored credential until it PROVES a principal — success is
+   * verified from the token's own claim, never assumed from a browser page
+   * having opened.
+   */
+  async reauthorizePrincipal(timeoutMs = 180_000): Promise<boolean> {
+    const started = await this.login();
+    if (!started.success) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const status = await invoke<AuthStatus>('check_auth_status');
+        if (status?.token && principalFromToken(status.token)) {
+          this.authToken = status.token;
+          if (status.handle) this.handle = status.handle;
+          return true;
+        }
+      } catch { /* keep polling — unreachable is not failure yet */ }
+    }
+    return false;
   }
 
   async login(): Promise<{ success: boolean; error?: string }> {
@@ -893,54 +986,37 @@ class BuddyClient {
    * the invites API is unreachable so the button never dead-ends.
    */
   /**
-   * A thought-bearing, optionally NAMED invitation (#320 consumption).
+   * A thought-bearing NAMED invitation — the ritual surface (#320 + #322).
    *
-   * `firstThought` is the EXACT prose that materializes as this user's first
-   * message when the invitation is redeemed — the server validates shape only
-   * and never rewrites it. `forGithub` names the one nontransferable
-   * recipient by GitHub login.
+   * In THIS surface both halves are required: a non-empty thought and the one
+   * nontransferable GitHub recipient. The thought is transmitted BYTE-FOR-BYTE
+   * as typed (validated with trim, sent untrimmed — "exact prose" means the
+   * server receives the person's actual keystrokes, not our tidied copy).
+   * The plain tracked-link path (getInviteLink) remains for thoughtless
+   * invites elsewhere.
    *
-   * The server refuses a thought from a handle-only session with a STRUCTURED
-   * `principal_required` + reauth action; callers key on the discriminant and
-   * render `action.label` as a button — never the raw error string.
+   * Success is the SERVED truth, not the 200 (#322): created only when
+   * carries_thought is true, named_for equals the normalized intended
+   * recipient, and expires_at is present. Anything else is an incomplete
+   * creation reported honestly — never celebratory success.
    */
   async createThoughtInvite(
     firstThought: string,
-    forGithub?: string
-  ): Promise<
-    | { kind: 'created'; shareUrl: string; carriesThought: boolean }
-    | { kind: 'principal_required'; label: string; url: string; hint: string }
-    | { kind: 'refused'; error: string }
-    | { kind: 'unreachable' }
-  > {
+    forGithub: string
+  ): Promise<ThoughtInviteResult> {
+    if (!firstThought.trim() || !normalizeGithub(forGithub)) {
+      return { kind: 'refused', error: 'This invitation needs both the thought and the person it is for.' };
+    }
     try {
       const res = await this.authenticatedRequest({
         method: 'POST',
         url: `${API_URL}/invites`,
         body: {
-          ...(firstThought.trim() ? { first_thought: firstThought.trim() } : {}),
-          ...(forGithub?.trim() ? { for_github: forGithub.trim() } : {}),
+          first_thought: firstThought,
+          for_github: forGithub,
         },
       });
-      if (res.ok && res.data?.share_url) {
-        return {
-          kind: 'created',
-          shareUrl: res.data.share_url,
-          carriesThought: Boolean(res.data.carries_thought),
-        };
-      }
-      if (res.data?.code === 'principal_required' && res.data?.action?.url) {
-        return {
-          kind: 'principal_required',
-          label: res.data.action.label || 'Refresh your /vibe session',
-          url: res.data.action.url,
-          hint: res.data.action.hint || res.data.error || '',
-        };
-      }
-      if (typeof res.data?.error === 'string' && res.data.error) {
-        return { kind: 'refused', error: res.data.error };
-      }
-      return { kind: 'unreachable' };
+      return decodeThoughtInvite(res.ok, res.data, forGithub);
     } catch {
       return { kind: 'unreachable' };
     }

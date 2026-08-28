@@ -54,6 +54,13 @@
         "https://www.slashvibe.dev/api/buddy-update?target={{target}}&current_version={{current_version}}"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYyOUZENEE1RTlDMDg4OTcKUldTWGlNRHBwZFNmOHFCc0h3eFcyRlpHRzJ6R0lROFRvQWYvR01GN1ZaWXFLOEd2U0hjMFRKaFYK"
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "vibe"
+        ]
+      }
     }
   }
 }
