@@ -405,10 +405,15 @@ class BuddyClient {
     // SNAPSHOT FIRST (review P2): success must be THIS round trip's doing.
     // Without it, any principal-bearing token already on disk — including a
     // stale one — reports success before the callback even lands.
-    let priorToken: string | null = null;
+    let priorToken: string | null;
     try {
       priorToken = (await invoke<AuthStatus>('check_auth_status'))?.token ?? null;
-    } catch { /* absent prior is fine — any principal-bearing token is new */ }
+    } catch {
+      // FAIL CLOSED (round-2 P2): if the snapshot itself cannot be read,
+      // success can no longer be causally bound to THIS login — abort rather
+      // than risk accepting a pre-existing principal token.
+      return false;
+    }
     const started = await this.login();
     if (!started.success) return false;
     const deadline = Date.now() + timeoutMs;

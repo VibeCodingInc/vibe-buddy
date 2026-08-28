@@ -146,12 +146,25 @@ pub async fn mind_prime(handle: String, context: String) -> Option<Value> {
         .flatten()
 }
 
+// SINGLE-FLIGHT (round-2 P1): the renderer's supersede aborts only its local
+// Promise.race — the 90s blocking request underneath keeps running. Without
+// this guard, pause–edit–pause stacks native requests. While one facet ask is
+// in flight, a second returns None immediately (the client already renders
+// null as silence and simply asks again at the next pause).
+static FACET_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[tauri::command]
 pub async fn mind_facet(handle: String, draft: String) -> Option<Value> {
-    tauri::async_runtime::spawn_blocking(move || request(MindRoute::Facet, &handle, &draft))
+    use std::sync::atomic::Ordering;
+    if FACET_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return None; // silence now; the next pause asks again
+    }
+    let out = tauri::async_runtime::spawn_blocking(move || request(MindRoute::Facet, &handle, &draft))
         .await
         .ok()
-        .flatten()
+        .flatten();
+    FACET_IN_FLIGHT.store(false, Ordering::SeqCst);
+    out
 }
 
 /// METADATA-ONLY composer tracing (Camille defect, 2026-08-28): every stage
@@ -162,27 +175,38 @@ pub async fn mind_facet(handle: String, draft: String) -> Option<Value> {
 /// counts, a short thread fingerprint, and response classes only.
 #[tauri::command]
 pub fn mind_trace(event: String, meta: Value) {
-    if event.len() > 64 {
+    // CLOSED VOCABULARY (round-2 P1): event names and meta KEYS are
+    // whitelisted — an open key set meant a key itself could carry a draft.
+    // Values are numbers/bools or short ids. Anything else is dropped whole.
+    const EVENTS: [&str; 8] = [
+        "ineligible", "timer_scheduled", "timer_fired", "request_attempted",
+        "response", "discard_stale", "suppressed_dismissed", "offer_rendered",
+    ];
+    const KEYS: [&str; 4] = ["fp", "draft_bytes", "context_bytes", "class"];
+    const CLASSES: [&str; 6] = ["offer", "facet", "aperture", "silence", "native_null", "invoke_error"];
+    if !EVENTS.contains(&event.as_str()) {
         return;
     }
-    // refuse anything that could smuggle prose: numbers/bools/short ids only
-    fn clean(v: &Value) -> bool {
-        match v {
-            Value::Number(_) | Value::Bool(_) | Value::Null => true,
-            Value::String(s) => s.len() <= 24,
-            _ => false,
+    let Some(obj) = meta.as_object() else { return };
+    if obj.len() > 4 {
+        return;
+    }
+    for (k, v) in obj {
+        if !KEYS.contains(&k.as_str()) {
+            return;
         }
-    }
-    let ok = meta.as_object().map(|o| o.len() <= 8 && o.values().all(clean)).unwrap_or(false);
-    if !ok {
-        return;
+        let ok = match (k.as_str(), v) {
+            ("fp", Value::String(s)) => s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric()),
+            ("class", Value::String(s)) => CLASSES.contains(&s.as_str()),
+            ("draft_bytes" | "context_bytes", Value::Number(_)) => true,
+            _ => false,
+        };
+        if !ok {
+            return;
+        }
     }
     let Some(home) = dirs::home_dir() else { return };
     let path = home.join(".vibe/mind/client-trace.local.jsonl");
-    // bounded: a diagnostics file must never become a corpus
-    if fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
-        let _ = fs::remove_file(&path);
-    }
     let line = serde_json::json!({
         "ts": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -190,7 +214,14 @@ pub fn mind_trace(event: String, meta: Value) {
             .unwrap_or(0),
         "event": event,
         "meta": meta,
-    });
+    })
+    .to_string();
+    // The cap counts THIS line too (round-2 P2): a diagnostics file may never
+    // cross 1MB, not merely start each append under it.
+    let existing = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if existing + line.len() as u64 + 1 > 1_000_000 {
+        let _ = fs::remove_file(&path);
+    }
     use std::io::Write;
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "{}", line);
