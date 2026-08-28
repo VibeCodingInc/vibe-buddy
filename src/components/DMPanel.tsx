@@ -266,6 +266,80 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   useEffect(() => {
     if (returnArmed && !input.includes(returnArmed)) setReturnArmed(null);
   }, [input, returnArmed]);
+  // ONE response handler for EVERY ask path (initial, requeue, busy retry,
+  // escalation collection). The review round proved that per-site copies
+  // diverge: a requeued ask dropped the escalation handshake, a stale
+  // escalation cancelled convergence, a busy skip stranded a fresh panel.
+  // `allowBusyRetry` bounds busy handling to ONE 3s retry per cycle;
+  // `allowEscalation` bounds background collection to ONE quiet re-ask.
+  const runAsk = (fp: string, opts: { allowBusyRetry: boolean; allowEscalation: boolean }) => {
+    setInput((cur) => {
+      if (tensionFingerprint(chatWith, cur) === fp) {
+        mindTrace('timer_fired', { fp: fpTag(fp) });
+        void askMind(chatWith, cur).then((res) => handleAskResult(res, fp, opts));
+      }
+      return cur;
+    });
+  };
+  const handleAskResult = (
+    res: Awaited<ReturnType<typeof askMind>>,
+    fp: string,
+    opts: { allowBusyRetry: boolean; allowEscalation: boolean }
+  ) => {
+    if (res === 'busy') {
+      // Skipped for an in-flight ask that may belong to an UNMOUNTED panel:
+      // retry once shortly rather than strand this draft. If it is busy
+      // again, silence — the next pause covers it.
+      if (!opts.allowBusyRetry) return;
+      window.clearTimeout(mindAskTimer.current);
+      mindAskTimer.current = window.setTimeout(
+        () => runAsk(fp, { ...opts, allowBusyRetry: false }),
+        3000
+      );
+      return;
+    }
+    if (!res) return; // refused/unreachable: silence
+    if (res.facet.silence) {
+      if (res.facet.escalating) {
+        // FINGERPRINT FIRST: a stale escalating response for an OLD draft
+        // must not clear the newer draft's debounce or install a dead
+        // collection timer — it converges like any stale completion.
+        let currentFp = '';
+        setInput((cur) => {
+          currentFp = tensionFingerprint(chatWith, cur);
+          return cur;
+        });
+        if (currentFp !== res.fingerprint) {
+          maybeReask(res.fingerprint);
+          return;
+        }
+        if (!opts.allowEscalation) return; // one quiet re-ask, ever
+        // The Mind is still thinking in the background — collect the cached
+        // judgment with ONE quiet re-ask of the SAME fingerprint.
+        // Invisible; sending never waits; no spinner exists to add.
+        mindTrace('escalation_wait', { fp: fpTag(res.fingerprint) });
+        window.clearTimeout(mindAskTimer.current);
+        mindAskTimer.current = window.setTimeout(
+          () => runAsk(res.fingerprint, { allowBusyRetry: true, allowEscalation: false }),
+          18_000
+        );
+        return;
+      }
+      maybeReask(res.fingerprint);
+      return;
+    }
+    // THE DISCARD RULE: render only if this exact tension is current.
+    setInput((cur) => {
+      if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
+        setMindOffer(res.facet);
+        setMindOfferFp(res.fingerprint);
+      } else {
+        mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
+        maybeReask(res.fingerprint);
+      }
+      return cur;
+    });
+  };
   // After an ask COMPLETES stale (or silent), ask once more for the CURRENT
   // draft if it is eligible and different — one cycle, never a storm: at most
   // one in-flight ask plus one requeue.
@@ -275,21 +349,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       if (fp !== completedFp && looksConsequential(cur) && !mindDismissedFp.current.has(fp)) {
         mindTrace('requeued', { fp: fpTag(fp) });
         window.clearTimeout(mindAskTimer.current);
-        mindAskTimer.current = window.setTimeout(() => {
-          mindTrace('timer_fired', { fp: fpTag(fp) });
-          void askMind(chatWith, cur).then((res) => {
-            if (!res || res.facet.silence) return;
-            setInput((now) => {
-              if (tensionFingerprint(chatWith, now) === res.fingerprint) {
-                setMindOffer(res.facet);
-                setMindOfferFp(res.fingerprint);
-              } else {
-                mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
-              }
-              return now;
-            });
-          });
-        }, 400);
+        mindAskTimer.current = window.setTimeout(
+          () => runAsk(fp, { allowBusyRetry: true, allowEscalation: true }),
+          400
+        );
       }
       return cur;
     });
@@ -315,58 +378,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       return; // dismissed = dismissed
     }
     mindTrace('timer_scheduled', { fp: fpTag(fp) });
-    mindAskTimer.current = window.setTimeout(() => {
-      mindTrace('timer_fired', { fp: fpTag(fp) });
-      void askMind(chatWith, input).then((res) => {
-        if (!res) {
-          // Busy or refused: the in-flight ask (or the next pause) covers it.
-          // When an ask COMPLETES and the draft has moved on, re-ask ONCE for
-          // the current tension — this is what converges a compose-pause-
-          // tweak rhythm onto the final draft instead of eating every offer.
-          return;
-        }
-        if (res.facet.silence) {
-          if (res.facet.escalating) {
-            // The Mind is still thinking in the background — collect the
-            // cached judgment with ONE quiet re-ask of the SAME fingerprint.
-            // Invisible; sending never waits; no spinner exists to add.
-            mindTrace('escalation_wait', { fp: fpTag(res.fingerprint) });
-            window.clearTimeout(mindAskTimer.current);
-            mindAskTimer.current = window.setTimeout(() => {
-              setInput((cur) => {
-                if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
-                  void askMind(chatWith, cur).then((again) => {
-                    if (!again || again.facet.silence) return;
-                    setInput((now) => {
-                      if (tensionFingerprint(chatWith, now) === again.fingerprint) {
-                        setMindOffer(again.facet);
-                        setMindOfferFp(again.fingerprint);
-                      }
-                      return now;
-                    });
-                  });
-                }
-                return cur;
-              });
-            }, 18_000);
-            return;
-          }
-          maybeReask(res.fingerprint);
-          return;
-        }
-        // THE DISCARD RULE: render only if this exact tension is current.
-        setInput((cur) => {
-          if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
-            setMindOffer(res.facet);
-            setMindOfferFp(res.fingerprint);
-          } else {
-            mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
-            maybeReask(res.fingerprint);
-          }
-          return cur;
-        });
-      });
-    }, 2500); // debounce: a pause in typing, not every keystroke
+    mindAskTimer.current = window.setTimeout(
+      () => runAsk(fp, { allowBusyRetry: true, allowEscalation: true }),
+      2500 // debounce: a pause in typing, not every keystroke
+    );
     return () => window.clearTimeout(mindAskTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, chatWith]);

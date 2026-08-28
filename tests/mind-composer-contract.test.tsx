@@ -529,3 +529,47 @@ describe('the Camille paste and the background escalation (real-canary acceptanc
     expect(offerLine()).not.toBeNull(); // the cached judgment rendered
   });
 });
+
+describe('PR14 review pins — stale escalation and busy stranding', () => {
+  it('a STALE escalating response converges instead of installing a dead timer', async () => {
+    mount();
+    type(TENSE);
+    tick(2500);
+    const staleFp = tensionFingerprint('vibetester2', TENSE);
+    const finalDraft = `${TENSE} — actually the second option, decided?`;
+    type(finalDraft); // draft moved on while the ask ran
+    await act(async () => {
+      const a = pendingAsks[0];
+      a.resolve({ facet: { silence: true, escalating: true } as any, fingerprint: staleFp });
+      await Promise.resolve();
+    });
+    // convergence (via maybeReask), NOT an 18s dead collection timer
+    tick(400);
+    expect(pendingAsks.length).toBeGreaterThanOrEqual(2);
+    await act(async () => {
+      const a = pendingAsks[pendingAsks.length - 1];
+      a.resolve({ facet: FACET, fingerprint: tensionFingerprint(a.handle, a.draft) });
+      await Promise.resolve();
+    });
+    expect(offerLine()).not.toBeNull(); // the CURRENT draft got its offer
+  });
+
+  it('a busy-skipped ask retries and the draft is never stranded', async () => {
+    mount();
+    // simulate the unmounted-panel case: the first ask reports busy
+    askMindMock.mockResolvedValueOnce('busy' as any);
+    type(TENSE);
+    tick(2500);
+    await act(async () => {}); // flush the 'busy' resolution so the retry timer arms
+    expect(askMindMock).toHaveBeenCalledTimes(1);
+    tick(3000); // the busy retry
+    expect(askMindMock).toHaveBeenCalledTimes(2);
+    // the retried ask runs to completion and renders
+    await act(async () => {
+      const a = pendingAsks[pendingAsks.length - 1];
+      a.resolve({ facet: FACET, fingerprint: tensionFingerprint(a.handle, a.draft) });
+      await Promise.resolve();
+    });
+    expect(offerLine()).not.toBeNull();
+  });
+});

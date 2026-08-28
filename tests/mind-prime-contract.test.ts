@@ -96,7 +96,7 @@ describe('askMind busy contract — one native request, run to completion', () =
     const mind = await import('../src/lib/mindClient');
     const p1 = mind.askMind('friend', 'first long consequential draft with a real question in it?');
     const p2 = await mind.askMind('friend', 'second draft typed while the first still runs?');
-    expect(p2).toBeNull(); // busy-skip — never a second native request
+    expect(p2).toBe('busy'); // busy-skip sentinel — never a second native request
     expect(pending).toHaveLength(1); // exactly ONE mind_facet in flight
     pending[0]({ silence: false, offer_kind: 'facet', line: 'x' });
     const r1 = await p1;

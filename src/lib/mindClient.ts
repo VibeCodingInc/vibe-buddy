@@ -204,12 +204,13 @@ export function resetMindPrimeCacheForTests(): void {
 export async function askMind(
   handle: string,
   draft: string
-): Promise<{ facet: MindFacet; fingerprint: string } | null> {
+): Promise<{ facet: MindFacet; fingerprint: string } | 'busy' | null> {
   if (askBusy) {
-    // The caller re-asks after the in-flight one completes; refusing here
-    // (rather than aborting the older ask) is what lets SOME ask finish.
+    // Distinct from null (review P2): after a thread switch, the completed
+    // ask belongs to an UNMOUNTED panel — the new panel must know its ask
+    // was skipped-for-busy (retry soon) rather than refused (silence).
     mindTrace('busy_skipped', {});
-    return null;
+    return 'busy';
   }
   askBusy = true;
   const fingerprint = tensionFingerprint(handle, draft);
