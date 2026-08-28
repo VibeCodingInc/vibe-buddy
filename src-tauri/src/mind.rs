@@ -288,11 +288,10 @@ mod tests {
 
     #[test]
     fn no_capability_grants_the_renderer_a_private_origin() {
-        // Round-2 P1, hardened round-3: a tracked capability auto-enables
-        // renderer fetches, so the repo may never carry one that grants ANY
-        // private-range HTTP origin — not just one literal address. Parse
-        // every string in every capability as a URL and judge the host
-        // SEMANTICALLY with the same parser the transport uses.
+        // Round-2 P1, hardened round-3/4: Tauri loads capabilities/**/* in
+        // JSON and TOML, so the scan walks RECURSIVELY and judges every
+        // http(s) URL-shaped token in every file — format-agnostic, with the
+        // same parser the transport uses. Any private-range origin fails.
         fn private_http(sval: &str) -> bool {
             let candidate = sval.trim().trim_end_matches("/*").trim_end_matches('*');
             let Ok(u) = url::Url::parse(candidate) else { return false };
@@ -313,26 +312,35 @@ mod tests {
                 None => false,
             }
         }
-        fn walk(v: &Value, path: &std::path::Path) {
-            match v {
-                Value::String(s) => assert!(
-                    !private_http(s),
+        fn scan_text(body: &str, path: &std::path::Path) {
+            let mut rest = body;
+            while let Some(i) = rest.find("http") {
+                let tail = &rest[i..];
+                let end = tail
+                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ']' || c == '}')
+                    .unwrap_or(tail.len());
+                let token = &tail[..end];
+                assert!(
+                    !private_http(token),
                     "capability {:?} grants the renderer a private origin: {}",
-                    path, s
-                ),
-                Value::Array(a) => a.iter().for_each(|x| walk(x, path)),
-                Value::Object(o) => o.values().for_each(|x| walk(x, path)),
-                _ => {}
+                    path, token
+                );
+                rest = &tail[end.max(4)..];
             }
         }
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
-        for entry in fs::read_dir(&dir).unwrap().flatten() {
-            let body = fs::read_to_string(entry.path()).unwrap_or_default();
-            if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
-                walk(&parsed, &entry.path());
+        fn visit(dir: &std::path::Path) {
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    visit(&p);
+                } else if let Ok(body) = fs::read_to_string(&p) {
+                    scan_text(&body, &p);
+                }
             }
         }
+        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities"));
     }
+
 
     #[test]
     fn canonical_binary_compiles_no_endpoint_at_all() {
