@@ -315,8 +315,19 @@ mod tests {
             // wildcard — host `*`, port `:*`, mid-host — fails closed.
             let candidate = candidate
                 .replacen("://*.", "://", 1);
-            if candidate.contains('*') {
-                return true; // wildcard host/port/path — fail closed
+            // ALLOWLIST, not denylist (round-9 ends the metacharacter game):
+            // after the two permitted wildcards, a scope must contain ONLY
+            // concrete-origin characters. Every URLPattern metacharacter —
+            // backslash escapes (https://127\.0.0.1 matches loopback while
+            // url::Url reads the backslash as a path separator), braces,
+            // groups, '+', '?', extra '*' — fails closed in one rule.
+            let lower_candidate = candidate.to_ascii_lowercase();
+            let body = lower_candidate
+                .strip_prefix("https://")
+                .or_else(|| lower_candidate.strip_prefix("http://"))
+                .unwrap_or(&lower_candidate);
+            if !body.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '/' | '-' | '_')) {
+                return true; // pattern metacharacters — fail closed
             }
             let Ok(u) = url::Url::parse(&candidate) else {
                 return true; // http-shaped but unparseable — fail closed
