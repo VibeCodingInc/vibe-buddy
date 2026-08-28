@@ -288,14 +288,19 @@ mod tests {
 
     #[test]
     fn no_capability_grants_the_renderer_a_private_origin() {
-        // Round-2 P1, hardened round-3/4: Tauri loads capabilities/**/* in
-        // JSON and TOML, so the scan walks RECURSIVELY and judges every
-        // http(s) URL-shaped token in every file — format-agnostic, with the
-        // same parser the transport uses. Any private-range origin fails.
+        // Rounds 2-6 taught one lesson: DESERIALIZE LIKE TAURI, then judge.
+        // Every string-scanning variant lost to another escape shape
+        // (\u0068ttp, \u003a, case). So: parse each capability file with the
+        // real JSON/TOML deserializers — which perform full unescaping — and
+        // judge every resulting string (keys and values) semantically with
+        // the transport's own URL parser. A file that parses as NEITHER
+        // format fails closed: an unparseable capability has no business in
+        // the repo.
         fn private_http(sval: &str) -> bool {
             let candidate = sval.trim().trim_end_matches("/*").trim_end_matches('*');
             let Ok(u) = url::Url::parse(candidate) else { return false };
-            if u.scheme() != "http" && u.scheme() != "https" {
+            let scheme = u.scheme().to_ascii_lowercase();
+            if scheme != "http" && scheme != "https" {
                 return false;
             }
             match u.host() {
@@ -308,35 +313,43 @@ mod tests {
                         || (o[0] == 100 && (64..=127).contains(&o[1]))
                 }
                 Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-                Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".local"),
+                Some(url::Host::Domain(d)) => {
+                    let d = d.to_ascii_lowercase();
+                    d == "localhost" || d.ends_with(".local")
+                }
                 None => false,
             }
         }
-        fn scan_text(body: &str, path: &std::path::Path) {
-            // Case-insensitive, unescape-first (round-5 P2): Tauri
-            // deserializes before use, so HTTP:// and JSON/TOML escape
-            // sequences (\u0068ttp, \x68) canonicalize into live grants.
-            // Judge the same canonical text Tauri would.
-            let unescaped = body
-                .replace("\\u0068", "h").replace("\\u0048", "H")
-                .replace("\\u0074", "t").replace("\\u0054", "T")
-                .replace("\\x68", "h").replace("\\x48", "H")
-                .replace("\\x74", "t").replace("\\x54", "T")
-                .replace("\\/", "/");
-            let lower = unescaped.to_lowercase();
-            let mut rest: &str = &lower;
-            while let Some(i) = rest.find("http") {
-                let tail = &rest[i..];
-                let end = tail
-                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == ']' || c == '}' || c == '\\')
-                    .unwrap_or(tail.len());
-                let token = &tail[..end];
-                assert!(
-                    !private_http(token),
-                    "capability {:?} grants the renderer a private origin: {}",
-                    path, token
-                );
-                rest = &tail[end.max(4)..];
+        fn judge_json(v: &Value, path: &std::path::Path) {
+            match v {
+                Value::String(s) => assert!(
+                    !private_http(s),
+                    "capability {:?} grants the renderer a private origin: {}", path, s
+                ),
+                Value::Array(a) => a.iter().for_each(|x| judge_json(x, path)),
+                Value::Object(o) => {
+                    for (k, x) in o {
+                        assert!(!private_http(k), "capability {:?} key is a private origin", path);
+                        judge_json(x, path);
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn judge_toml(v: &toml::Value, path: &std::path::Path) {
+            match v {
+                toml::Value::String(s) => assert!(
+                    !private_http(s),
+                    "capability {:?} grants the renderer a private origin: {}", path, s
+                ),
+                toml::Value::Array(a) => a.iter().for_each(|x| judge_toml(x, path)),
+                toml::Value::Table(t) => {
+                    for (k, x) in t {
+                        assert!(!private_http(k), "capability {:?} key is a private origin", path);
+                        judge_toml(x, path);
+                    }
+                }
+                _ => {}
             }
         }
         fn visit(dir: &std::path::Path) {
@@ -344,13 +357,21 @@ mod tests {
                 let p = entry.path();
                 if p.is_dir() {
                     visit(&p);
-                } else if let Ok(body) = fs::read_to_string(&p) {
-                    scan_text(&body, &p);
+                    continue;
+                }
+                let body = fs::read_to_string(&p).unwrap_or_default();
+                if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+                    judge_json(&parsed, &p);
+                } else if let Ok(parsed) = body.parse::<toml::Value>() {
+                    judge_toml(&parsed, &p);
+                } else {
+                    panic!("capability {:?} parses as neither JSON nor TOML — fail closed", p);
                 }
             }
         }
         visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities"));
     }
+
 
 
     #[test]
