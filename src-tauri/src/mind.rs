@@ -11,7 +11,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const MIND_ORIGIN: &str = "http://100.121.205.111:7788";
+// A compiled ALLOWLIST of exactly two origins, tried in order — never a
+// configurable URL. Loopback first: an invitee's Mind is a LOCAL capability
+// awakened on their own machine (awaken.py binds 127.0.0.1 only), so their
+// Buddy finds it with zero setup. When nothing listens locally the connect
+// fails in ~1ms and the founder's private Tailnet Studio is tried. One Mind
+// per person; which one is decided by whose machine this is, not by config.
+const MIND_ORIGINS: [&str; 2] = [
+    "http://127.0.0.1:7788",
+    "http://100.121.205.111:7788",
+];
 const MAX_HANDLE_BYTES: usize = 64;
 const MAX_DRAFT_BYTES: usize = 4_000;
 const MAX_CONTEXT_BYTES: usize = 2_000;
@@ -119,13 +128,16 @@ fn request(route: MindRoute, handle: &str, text: &str) -> Option<Value> {
     };
 
     let client = mind_client(route)?;
-    let response = client
-        .post(format!("{}{}", MIND_ORIGIN, route.path()))
-        .bearer_auth(token)
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_vec(&payload).ok()?)
-        .send()
-        .ok()?;
+    let body = serde_json::to_vec(&payload).ok()?;
+    let response = MIND_ORIGINS.iter().find_map(|origin| {
+        client
+            .post(format!("{}{}", origin, route.path()))
+            .bearer_auth(&token)
+            .header("Content-Type", "application/json")
+            .body(body.clone())
+            .send()
+            .ok()
+    })?;
     if !response.status().is_success()
         || response.content_length().unwrap_or(0) > MAX_RESPONSE_BYTES
     {
@@ -192,9 +204,14 @@ mod tests {
     }
 
     #[test]
-    fn native_destination_is_one_exact_tailnet_origin() {
-        assert_eq!(MIND_ORIGIN, "http://100.121.205.111:7788");
-        assert!(!MIND_ORIGIN.contains("slashvibe.dev"));
+    fn native_destinations_are_exactly_local_then_founder_tailnet() {
+        // Order is the contract: the person's own machine outranks the
+        // founder's Studio, and nothing else is reachable at all.
+        assert_eq!(
+            MIND_ORIGINS,
+            ["http://127.0.0.1:7788", "http://100.121.205.111:7788"]
+        );
+        assert!(MIND_ORIGINS.iter().all(|o| !o.contains("slashvibe.dev")));
     }
 
     #[test]
