@@ -623,7 +623,34 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     });
     // Re-send with the reply target the failed message carried, so a Retry
     // preserves the human's chosen parent (never silently dropping it).
+    // Traced exactly like send() — the isolated canary (2026-08-28) proved a
+    // Retry delivering to production with ZERO trace evidence, the same
+    // blindness the P0 was about.
+    const retryStarted = Date.now();
+    mindTrace('send_clicked', { draft_bytes: new TextEncoder().encode(failed.content).length });
+    mindTrace('send_attempted', { draft_bytes: new TextEncoder().encode(failed.content).length });
     const result = await buddyClient.sendMessageResult(chatWith, failed.content, failReplyTargets.get(failed.id));
+    mindTrace('send_result', {
+      class: result.ok ? 'stored' : result.error ? 'refused' : 'transport',
+      ms: Date.now() - retryStarted,
+      ...(result.id ? { mid: result.id } : {}),
+    });
+    if (result.ok) {
+      const lengths = [
+        failed.content.length,
+        [...failed.content].length,
+        new TextEncoder().encode(failed.content).length,
+      ];
+      mindTrace('send_readback', {
+        ...(result.id ? { mid: result.id } : {}),
+        class:
+          !result.id || result.storedLength === undefined
+            ? 'missing'
+            : lengths.includes(result.storedLength)
+              ? 'match'
+              : 'mismatch',
+      });
+    }
     if (result.ok) {
       realtime.recordStoredMessageWith(chatWith);
       setPollArmed(true);
