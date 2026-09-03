@@ -366,16 +366,26 @@ class RealtimeMessages {
    * under Bob's key. Capture the identity of THIS request and drop the result
    * unless every part of it still matches.
    */
-  // One thread read at a time: on the 3s fallback a read slower than the
-  // interval used to overlap the next one (codex on #18).
+  // One thread read at a time, and never a dropped refresh. On the 3s
+  // fallback a read slower than the interval used to overlap the next one;
+  // but with SSE live there is no timer, so a message event or a thread
+  // switch arriving mid-read is the ONLY refresh — it must run after the
+  // current read settles, not vanish (codex P1 on #18).
   private dmInFlight = false;
+  private dmRefreshPending = false;
 
   private async pollDM() {
     if (!this.handle || !this.dmTarget || !this.onMessages) return;
-    if (this.dmInFlight) return;
+    if (this.dmInFlight) {
+      this.dmRefreshPending = true;
+      return;
+    }
     this.dmInFlight = true;
     try {
-      await this.pollDMOnce();
+      do {
+        this.dmRefreshPending = false;
+        await this.pollDMOnce();
+      } while (this.dmRefreshPending);
     } finally {
       this.dmInFlight = false;
     }
