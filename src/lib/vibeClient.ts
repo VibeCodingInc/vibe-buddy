@@ -215,6 +215,8 @@ export interface VibeThread {
   id?: string;
   with: string;
   unread: number;
+  /** Served message count — addresses the newest page of a long thread (buddy#17). */
+  messageCount?: number;
   lastMessage?: {
     from: string;
     body: string;
@@ -1178,6 +1180,7 @@ class BuddyClient {
         id: typeof t.id === 'string' ? t.id : undefined,
         with: t.with,
         unread: t.unread || 0,
+        messageCount: Number.isFinite(t.message_count) ? t.message_count : undefined,
         lastMessage: t.last_message
           ? {
               from: t.last_message.from,
@@ -1413,29 +1416,36 @@ class BuddyClient {
       // Asked with no page size, a thread past 100 messages came back as its
       // first 100 and the open panel silently lost its newest — the founder's
       // own 108-message thread showed nothing from the last sixteen hours
-      // while rendering his local send (buddy#17). Walk every page at the
-      // maximum size so the panel holds the whole thread, newest included.
+      // while rendering his local send (buddy#17). The panel shows the TAIL:
+      // one page for a short thread; for a long one, the thread list's
+      // message_count addresses the newest page directly (codex on #18: a
+      // forward walk with a cap drops the tail again, and the polling
+      // fallback would replay the whole history every few seconds).
       const PAGE = 200;
-      const wireMessages: any[] = [];
-      for (let offset = 0; ; offset += PAGE) {
+      const readPage = async (offset: number): Promise<any[] | null> => {
         const { ok, data } = await this.authenticatedRequest({
           method: 'GET',
           url: `${API_URL}/messages?user=${this.handle}&with=${otherHandle}&limit=${PAGE}&offset=${offset}`,
         });
-        if (!ok || !data || typeof data !== 'object' || Array.isArray(data)) {
-          return { messages: [], error: true };
+        if (!ok || !data || typeof data !== 'object' || Array.isArray(data)) return null;
+        return Array.isArray(data.messages) ? data.messages : Array.isArray(data.thread) ? data.thread : null;
+      };
+      let wireMessages = await readPage(0);
+      if (!wireMessages) {
+        return { messages: [], error: true };
+      }
+      if (wireMessages.length >= PAGE) {
+        // Long thread: learn its length from the list, then read the newest page.
+        const list = await this.getThreadListResult();
+        const entry = list.threads.find((t) => t.with === otherHandle);
+        const count = entry && Number.isFinite(entry.messageCount) ? (entry.messageCount as number) : null;
+        if (count !== null && count > PAGE) {
+          const tail = await readPage(count - PAGE);
+          if (!tail) {
+            return { messages: [], error: true };
+          }
+          wireMessages = tail;
         }
-        const page = Array.isArray(data.messages)
-          ? data.messages
-          : Array.isArray(data.thread)
-            ? data.thread
-            : null;
-        if (!page) {
-          return { messages: [], error: true };
-        }
-        wireMessages.push(...page);
-        if (page.length < PAGE) break;
-        if (offset >= PAGE * 25) break; // 5,000 messages: a bound, not a claim
       }
 
       // KILL SWITCH (2026-08-09, take-stock Move 0a): do NOT advance the read

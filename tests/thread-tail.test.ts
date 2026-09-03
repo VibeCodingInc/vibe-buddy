@@ -18,9 +18,13 @@ const msg = (i: number) => ({
 const httpFetch = vi.fn(async (url: string) => {
   calls.push(String(url));
   const u = new URL(String(url));
+  const all = Array.from({ length: TOTAL }, (_, i) => msg(i + 1));
+  if (!u.searchParams.get('with')) {
+    // the thread list: the only place the length of a thread is served
+    return { ok: true, status: 200, json: async () => ({ success: true, threads: [{ id: 'thread_T', with: 'them', unread: 1, message_count: TOTAL, last_message: { from: 'them', body: 'x', created_at: all[TOTAL - 1].created_at } }] }) };
+  }
   const limit = Number(u.searchParams.get('limit') ?? 100);
   const offset = Number(u.searchParams.get('offset') ?? 0);
-  const all = Array.from({ length: TOTAL }, (_, i) => msg(i + 1));
   const page = all.slice(offset, offset + limit);
   return { ok: true, status: 200, json: async () => ({ success: true, messages: page, count: page.length, offset, limit }) };
 });
@@ -39,20 +43,20 @@ beforeEach(() => {
 });
 
 describe('thread loader reads the whole thread, newest included (buddy#17)', () => {
-  it('walks every page at the maximum size and keeps the tail', async () => {
+  it('a long thread shows its newest page, addressed by the served count', async () => {
     const { buddyClient } = await import('../src/lib/vibeClient');
     const client = buddyClient as any;
     client.handle = 'vibetester1';
     client.authToken = token();
     const { messages, error } = await client.getThreadResult('them');
     expect(error).toBe(false);
-    expect(messages).toHaveLength(TOTAL);
+    expect(messages).toHaveLength(PAGE);
     expect(messages[messages.length - 1].id).toBe(`m${TOTAL}`);
+    expect(messages[0].id).toBe(`m${TOTAL - PAGE + 1}`);
     const threadCalls = calls.filter((c) => c.includes('with=them'));
-    expect(threadCalls).toHaveLength(2);
+    expect(threadCalls).toHaveLength(2); // first page, then the tail
     expect(threadCalls[0]).toContain(`limit=${PAGE}`);
-    expect(threadCalls[0]).toContain('offset=0');
-    expect(threadCalls[1]).toContain(`offset=${PAGE}`);
+    expect(threadCalls[1]).toContain(`offset=${TOTAL - PAGE}`);
   });
 
   it('a short thread costs one request', async () => {

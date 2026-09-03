@@ -366,7 +366,22 @@ class RealtimeMessages {
    * under Bob's key. Capture the identity of THIS request and drop the result
    * unless every part of it still matches.
    */
+  // One thread read at a time: on the 3s fallback a read slower than the
+  // interval used to overlap the next one (codex on #18).
+  private dmInFlight = false;
+
   private async pollDM() {
+    if (!this.handle || !this.dmTarget || !this.onMessages) return;
+    if (this.dmInFlight) return;
+    this.dmInFlight = true;
+    try {
+      await this.pollDMOnce();
+    } finally {
+      this.dmInFlight = false;
+    }
+  }
+
+  private async pollDMOnce() {
     if (!this.handle || !this.dmTarget || !this.onMessages) return;
     const generation = this.dmGeneration;
     const handle = this.handle;
