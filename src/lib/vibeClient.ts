@@ -1416,53 +1416,70 @@ class BuddyClient {
       // Asked with no page size, a thread past 100 messages came back as its
       // first 100 and the open panel silently lost its newest — the founder's
       // own 108-message thread showed nothing from the last sixteen hours
-      // while rendering his local send (buddy#17). The panel shows the TAIL:
-      // one page for a short thread; for a long one, the thread list's
-      // message_count addresses the newest page directly (codex on #18: a
-      // forward walk with a cap drops the tail again, and the polling
-      // fallback would replay the whole history every few seconds).
+      // while rendering his local send (buddy#17). The panel shows the TAIL.
+      //
+      // Shape (four codex passes on #18):
+      //  - one page for a short thread — one request, as before;
+      //  - a long thread uses the served message_count only as a STARTING
+      //    hint (the inbox cache can be stale), then walks to the true end,
+      //    always keeping the newest page of what it read;
+      //  - every follow-up request is bound to the identity that started the
+      //    read — a sign-out/sign-in mid-read must not run as the new
+      //    account against the old peer (this endpoint creates a thread);
+      //  - the safety bound is an ERROR, never a capped page presented as
+      //    the tail; the panel keeps its last-good cache on error.
       const PAGE = 200;
+      const startedAs = { handle: this.handle, token: this.authToken };
+      const sameIdentity = () => this.handle === startedAs.handle && this.authToken === startedAs.token;
       const readPage = async (offset: number): Promise<any[] | null> => {
+        if (!sameIdentity()) return null;
         const { ok, data } = await this.authenticatedRequest({
           method: 'GET',
-          url: `${API_URL}/messages?user=${this.handle}&with=${otherHandle}&limit=${PAGE}&offset=${offset}`,
+          url: `${API_URL}/messages?user=${startedAs.handle}&with=${otherHandle}&limit=${PAGE}&offset=${offset}`,
         });
         if (!ok || !data || typeof data !== 'object' || Array.isArray(data)) return null;
         return Array.isArray(data.messages) ? data.messages : Array.isArray(data.thread) ? data.thread : null;
       };
-      let wireMessages = await readPage(0);
-      if (!wireMessages) {
+      const first = await readPage(0);
+      if (!first) {
         return { messages: [], error: true };
       }
-      if (wireMessages.length >= PAGE) {
-        // Long thread: learn its length from the list, then read the newest page.
-        const list = await this.getThreadListResult();
-        const entry = list.threads.find((t) => t.with === otherHandle);
-        const count = entry && Number.isFinite(entry.messageCount) ? (entry.messageCount as number) : null;
-        if (count !== null && count > PAGE) {
-          const tail = await readPage(count - PAGE);
-          if (!tail) {
+      let wireMessages: any[] = first;
+      if (first.length >= PAGE) {
+        let count: number | null = null;
+        if (sameIdentity()) {
+          const list = await this.getThreadListResult();
+          const entry = list.threads.find((t) => t.with === otherHandle);
+          count = entry && Number.isFinite(entry.messageCount) ? (entry.messageCount as number) : null;
+        }
+        let offset = PAGE;
+        if (count !== null && count > 2 * PAGE) {
+          // Jump near the hinted tail; the walk below reaches the true end.
+          offset = count - PAGE;
+          const near = await readPage(offset);
+          if (!near) {
             return { messages: [], error: true };
           }
-          wireMessages = tail;
-        } else if (count === null) {
-          // Not on the inbox page (archived, or past its first 50 rows), so no
-          // served length. Walk forward and KEEP the newest page — the walk
-          // is bounded, but what it keeps is always the tail of what it read
-          // (codex on #18, third pass).
-          let offset = PAGE;
-          for (let pages = 1; pages < 50; pages++, offset += PAGE) {
-            const next = await readPage(offset);
-            if (!next) {
-              return { messages: [], error: true };
-            }
-            if (next.length === 0) break;
-            wireMessages = wireMessages.concat(next).slice(-PAGE);
-            if (next.length < PAGE) break;
+          wireMessages = near;
+          offset += PAGE;
+        }
+        let reachedEnd = false;
+        for (let pages = 0; pages < 50; pages++, offset += PAGE) {
+          const next = await readPage(offset);
+          if (!next) {
+            return { messages: [], error: true };
           }
+          if (next.length === 0) { reachedEnd = true; break; }
+          wireMessages = wireMessages.concat(next).slice(-PAGE);
+          if (next.length < PAGE) { reachedEnd = true; break; }
+        }
+        if (!reachedEnd) {
+          return { messages: [], error: true }; // bound hit: not a claim about the tail
         }
       }
-
+      if (!sameIdentity()) {
+        return { messages: [], error: true };
+      }
       // KILL SWITCH (2026-08-09, take-stock Move 0a): do NOT advance the read
       // cursor from here. "Refreshing a thread" is not "the human saw it" —
       // Buddy's hide-on-close keeps this panel mounted, so background

@@ -54,9 +54,9 @@ describe('thread loader reads the whole thread, newest included (buddy#17)', () 
     expect(messages[messages.length - 1].id).toBe(`m${TOTAL}`);
     expect(messages[0].id).toBe(`m${TOTAL - PAGE + 1}`);
     const threadCalls = calls.filter((c) => c.includes('with=them'));
-    expect(threadCalls).toHaveLength(2); // first page, then the tail
+    expect(threadCalls).toHaveLength(2); // first page, then the short second page = the end
     expect(threadCalls[0]).toContain(`limit=${PAGE}`);
-    expect(threadCalls[1]).toContain(`offset=${TOTAL - PAGE}`);
+    expect(threadCalls[1]).toContain(`offset=${PAGE}`);
   });
 
   it('a short thread costs one request', async () => {
@@ -98,5 +98,52 @@ describe('a long thread that is not on the inbox page (archived / past 50 rows)'
     expect(messages).toHaveLength(PAGE);
     expect(messages[messages.length - 1].id).toBe('m450');
     expect(messages[0].id).toBe('m251');
+  });
+});
+
+
+describe('the served count is a hint, and identity is bound for the whole read', () => {
+  function fixture(total: number, servedCount: number | null) {
+    httpFetch.mockImplementation(async (url: string) => {
+      calls.push(String(url));
+      const u = new URL(String(url));
+      const all = Array.from({ length: total }, (_, i) => msg(i + 1));
+      if (!u.searchParams.get('with')) {
+        const threads = servedCount === null ? [] : [{ id: 't', with: 'them', unread: 1, message_count: servedCount, last_message: { from: 'them', body: 'x', created_at: all[total - 1].created_at } }];
+        return { ok: true, status: 200, json: async () => ({ success: true, threads }) };
+      }
+      const limit = Number(u.searchParams.get('limit') ?? 100);
+      const offset = Number(u.searchParams.get('offset') ?? 0);
+      const page = all.slice(offset, offset + limit);
+      return { ok: true, status: 200, json: async () => ({ success: true, messages: page, count: page.length, offset, limit }) };
+    });
+  }
+
+  it('a stale (too small) count still ends at the true newest message', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1'; client.authToken = token();
+    fixture(1000, 700); // cache says 700, the thread is really 1000
+    const { messages, error } = await client.getThreadResult('them');
+    expect(error).toBe(false);
+    expect(messages[messages.length - 1].id).toBe('m1000');
+    expect(messages).toHaveLength(PAGE);
+  });
+
+  it('a sign-out mid-read ends the read as an error and sends nothing as the new account', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1'; client.authToken = token();
+    fixture(1000, 1000);
+    let n = 0;
+    const orig = httpFetch.getMockImplementation()!;
+    httpFetch.mockImplementation(async (url: string) => {
+      n++;
+      if (n === 2) { client.handle = 'someone_else'; } // identity changes after the first read
+      return orig(url);
+    });
+    const { error } = await client.getThreadResult('them');
+    expect(error).toBe(true);
+    expect(calls.filter((c) => c.includes('user=someone_else'))).toHaveLength(0);
   });
 });
