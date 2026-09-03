@@ -147,3 +147,50 @@ describe('the served count is a hint, and identity is bound for the whole read',
     expect(calls.filter((c) => c.includes('user=someone_else'))).toHaveLength(0);
   });
 });
+
+
+describe('pass five: token refresh is the same person; an overshooting hint is not the tail', () => {
+  function fixture(total: number, servedCount: number | null) {
+    httpFetch.mockImplementation(async (url: string) => {
+      calls.push(String(url));
+      const u = new URL(String(url));
+      const all = Array.from({ length: total }, (_, i) => msg(i + 1));
+      if (!u.searchParams.get('with')) {
+        const threads = servedCount === null ? [] : [{ id: 't', with: 'them', unread: 1, message_count: servedCount, last_message: { from: 'them', body: 'x', created_at: all[total - 1].created_at } }];
+        return { ok: true, status: 200, json: async () => ({ success: true, threads }) };
+      }
+      const limit = Number(u.searchParams.get('limit') ?? 100);
+      const offset = Number(u.searchParams.get('offset') ?? 0);
+      const page = all.slice(offset, offset + limit);
+      return { ok: true, status: 200, json: async () => ({ success: true, messages: page, count: page.length, offset, limit }) };
+    });
+  }
+
+  it('a same-account token rotation mid-read does not end the read', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1'; client.authToken = token();
+    fixture(1000, 1000);
+    let n = 0;
+    const orig = httpFetch.getMockImplementation()!;
+    httpFetch.mockImplementation(async (url: string) => {
+      n++;
+      if (n === 2) { client.authToken = token() + 'rotated'; } // same person, fresh token
+      return orig(url);
+    });
+    const { messages, error } = await client.getThreadResult('them');
+    expect(error).toBe(false);
+    expect(messages[messages.length - 1].id).toBe('m1000');
+  });
+
+  it('a count hint past the end falls back and still returns the real tail', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1'; client.authToken = token();
+    fixture(450, 1200); // cache says 1200, the thread is really 450
+    const { messages, error } = await client.getThreadResult('them');
+    expect(error).toBe(false);
+    expect(messages).toHaveLength(PAGE);
+    expect(messages[messages.length - 1].id).toBe('m450');
+  });
+});

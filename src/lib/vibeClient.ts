@@ -1429,8 +1429,11 @@ class BuddyClient {
       //  - the safety bound is an ERROR, never a capped page presented as
       //    the tail; the panel keeps its last-good cache on error.
       const PAGE = 200;
-      const startedAs = { handle: this.handle, token: this.authToken };
-      const sameIdentity = () => this.handle === startedAs.handle && this.authToken === startedAs.token;
+      // Bound to the ACCOUNT, not the token bytes: a same-account token refresh
+      // mid-read (authenticatedRequest retries a 401) is still this person
+      // (codex pass 5). A different handle, or a sign-out, ends the read.
+      const startedAs = { handle: this.handle };
+      const sameIdentity = () => !!this.handle && this.handle === startedAs.handle && !this.loggingOut;
       const readPage = async (offset: number): Promise<any[] | null> => {
         if (!sameIdentity()) return null;
         const { ok, data } = await this.authenticatedRequest({
@@ -1455,13 +1458,17 @@ class BuddyClient {
         let offset = PAGE;
         if (count !== null && count > 2 * PAGE) {
           // Jump near the hinted tail; the walk below reaches the true end.
-          offset = count - PAGE;
-          const near = await readPage(offset);
+          // A hint can OVERSHOOT (soft-deleted rows, stale cache): an empty
+          // page there is not the tail — fall back to the forward walk.
+          const jump = count - PAGE;
+          const near = await readPage(jump);
           if (!near) {
             return { messages: [], error: true };
           }
-          wireMessages = near;
-          offset += PAGE;
+          if (near.length > 0) {
+            wireMessages = near;
+            offset = jump + PAGE;
+          }
         }
         let reachedEnd = false;
         for (let pages = 0; pages < 50; pages++, offset += PAGE) {
