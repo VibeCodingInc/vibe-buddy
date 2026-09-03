@@ -194,3 +194,52 @@ describe('pass five: token refresh is the same person; an overshooting hint is n
     expect(messages[messages.length - 1].id).toBe('m450');
   });
 });
+
+
+describe('pass six: a short hinted page refills to a full newest page; count-less threads remember their tail', () => {
+  function fixture(total: number, servedCount: number | null) {
+    httpFetch.mockImplementation(async (url: string) => {
+      calls.push(String(url));
+      const u = new URL(String(url));
+      const all = Array.from({ length: total }, (_, i) => msg(i + 1));
+      if (!u.searchParams.get('with')) {
+        const threads = servedCount === null ? [] : [{ id: 't', with: 'them', unread: 1, message_count: servedCount, last_message: { from: 'them', body: 'x', created_at: all[total - 1].created_at } }];
+        return { ok: true, status: 200, json: async () => ({ success: true, threads }) };
+      }
+      const limit = Number(u.searchParams.get('limit') ?? 100);
+      const offset = Number(u.searchParams.get('offset') ?? 0);
+      const page = all.slice(offset, offset + limit);
+      return { ok: true, status: 200, json: async () => ({ success: true, messages: page, count: page.length, offset, limit }) };
+    });
+  }
+
+  it('hint 500 for a 450-row thread still yields the newest 200 (m251..m450)', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1'; client.authToken = token();
+    client.tailOffsetByPeer = new Map();
+    fixture(450, 500);
+    const { messages, error } = await client.getThreadResult('them');
+    expect(error).toBe(false);
+    expect(messages).toHaveLength(PAGE);
+    expect(messages[0].id).toBe('m251');
+    expect(messages[messages.length - 1].id).toBe('m450');
+  });
+
+  it('a count-less 1000-row thread walks once, then refreshes from its remembered tail', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1'; client.authToken = token();
+    client.tailOffsetByPeer = new Map();
+    fixture(1000, null);
+    await client.getThreadResult('them');
+    const firstWalk = calls.filter((c) => c.includes('with=them')).length;
+    calls.length = 0;
+    const { messages, error } = await client.getThreadResult('them');
+    const secondWalk = calls.filter((c) => c.includes('with=them')).length;
+    expect(error).toBe(false);
+    expect(messages[messages.length - 1].id).toBe('m1000');
+    expect(firstWalk).toBeGreaterThan(4);
+    expect(secondWalk).toBeLessThanOrEqual(3);
+  });
+});

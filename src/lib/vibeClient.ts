@@ -1408,6 +1408,11 @@ class BuddyClient {
    * invoke the UI callback, because DMPanel would render `[]` and persist that
    * as the new local cache.
    */
+  // Where a peer's tail was last found, so a count-less thread (archived, or
+  // past the inbox's first rows) does not re-walk its whole history on every
+  // refresh (codex pass 6). Presentation memory only; never authority.
+  private tailOffsetByPeer = new Map<string, number>();
+
   async getThreadResult(otherHandle: string): Promise<{ messages: VibeMessage[]; error: boolean }> {
     if (!this.handle) return { messages: [], error: true };
 
@@ -1456,14 +1461,25 @@ class BuddyClient {
           count = entry && Number.isFinite(entry.messageCount) ? (entry.messageCount as number) : null;
         }
         let offset = PAGE;
-        if (count !== null && count > 2 * PAGE) {
+        const remembered = this.tailOffsetByPeer.get(otherHandle) ?? null;
+        const hint = count !== null && count > 2 * PAGE ? count - PAGE : remembered !== null && remembered > PAGE ? remembered : null;
+        if (hint !== null) {
           // Jump near the hinted tail; the walk below reaches the true end.
           // A hint can OVERSHOOT (soft-deleted rows, stale cache): an empty
-          // page there is not the tail — fall back to the forward walk.
-          const jump = count - PAGE;
-          const near = await readPage(jump);
+          // page there is not the tail — fall back to the forward walk; a
+          // SHORT page there is the end, but refill so the panel still holds
+          // a full newest page.
+          let jump = hint;
+          let near = await readPage(jump);
           if (!near) {
             return { messages: [], error: true };
+          }
+          if (near.length > 0 && near.length < PAGE) {
+            jump = Math.max(0, jump - (PAGE - near.length));
+            near = await readPage(jump);
+            if (!near) {
+              return { messages: [], error: true };
+            }
           }
           if (near.length > 0) {
             wireMessages = near;
@@ -1483,6 +1499,8 @@ class BuddyClient {
         if (!reachedEnd) {
           return { messages: [], error: true }; // bound hit: not a claim about the tail
         }
+        // Remember where the tail was for the next refresh of this peer.
+        this.tailOffsetByPeer.set(otherHandle, Math.max(0, offset - PAGE));
       }
       if (!sameIdentity()) {
         return { messages: [], error: true };
