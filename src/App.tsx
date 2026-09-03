@@ -1141,8 +1141,7 @@ export default function App() {
             maxWidth: '200px',
             lineHeight: '1.5',
           }}>
-            Build together in your terminal.
-            Claude Code, Codex, Cursor.
+            Message people from Claude Code or Codex.
           </div>
         )}
 
