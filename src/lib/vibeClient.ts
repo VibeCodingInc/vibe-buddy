@@ -215,6 +215,8 @@ export interface VibeThread {
   id?: string;
   with: string;
   unread: number;
+  /** Served message count — addresses the newest page of a long thread (buddy#17). */
+  messageCount?: number;
   lastMessage?: {
     from: string;
     body: string;
@@ -1178,6 +1180,7 @@ class BuddyClient {
         id: typeof t.id === 'string' ? t.id : undefined,
         with: t.with,
         unread: t.unread || 0,
+        messageCount: Number.isFinite(t.message_count) ? t.message_count : undefined,
         lastMessage: t.last_message
           ? {
               from: t.last_message.from,
@@ -1405,27 +1408,103 @@ class BuddyClient {
    * invoke the UI callback, because DMPanel would render `[]` and persist that
    * as the new local cache.
    */
+  // Where a peer's tail was last found, so a count-less thread (archived, or
+  // past the inbox's first rows) does not re-walk its whole history on every
+  // refresh (codex pass 6). Presentation memory only; never authority.
+  private tailOffsetByPeer = new Map<string, number>();
+
   async getThreadResult(otherHandle: string): Promise<{ messages: VibeMessage[]; error: boolean }> {
     if (!this.handle) return { messages: [], error: true };
 
     try {
-      const { ok, data } = await this.authenticatedRequest({
-        method: 'GET',
-        url: `${API_URL}/messages?user=${this.handle}&with=${otherHandle}`,
-      });
-
-      if (!ok || !data || typeof data !== 'object' || Array.isArray(data)) {
+      // The server pages a thread OLDEST-first, 100 by default, 200 at most.
+      // Asked with no page size, a thread past 100 messages came back as its
+      // first 100 and the open panel silently lost its newest — the founder's
+      // own 108-message thread showed nothing from the last sixteen hours
+      // while rendering his local send (buddy#17). The panel shows the TAIL.
+      //
+      // Shape (four codex passes on #18):
+      //  - one page for a short thread — one request, as before;
+      //  - a long thread uses the served message_count only as a STARTING
+      //    hint (the inbox cache can be stale), then walks to the true end,
+      //    always keeping the newest page of what it read;
+      //  - every follow-up request is bound to the identity that started the
+      //    read — a sign-out/sign-in mid-read must not run as the new
+      //    account against the old peer (this endpoint creates a thread);
+      //  - the safety bound is an ERROR, never a capped page presented as
+      //    the tail; the panel keeps its last-good cache on error.
+      const PAGE = 200;
+      // Bound to the ACCOUNT, not the token bytes: a same-account token refresh
+      // mid-read (authenticatedRequest retries a 401) is still this person
+      // (codex pass 5). A different handle, or a sign-out, ends the read.
+      const startedAs = { handle: this.handle };
+      const sameIdentity = () => !!this.handle && this.handle === startedAs.handle && !this.loggingOut;
+      const readPage = async (offset: number): Promise<any[] | null> => {
+        if (!sameIdentity()) return null;
+        const { ok, data } = await this.authenticatedRequest({
+          method: 'GET',
+          url: `${API_URL}/messages?user=${startedAs.handle}&with=${otherHandle}&limit=${PAGE}&offset=${offset}`,
+        });
+        if (!ok || !data || typeof data !== 'object' || Array.isArray(data)) return null;
+        return Array.isArray(data.messages) ? data.messages : Array.isArray(data.thread) ? data.thread : null;
+      };
+      const first = await readPage(0);
+      if (!first) {
         return { messages: [], error: true };
       }
-      const wireMessages = Array.isArray(data.messages)
-        ? data.messages
-        : Array.isArray(data.thread)
-          ? data.thread
-          : null;
-      if (!wireMessages) {
+      let wireMessages: any[] = first;
+      if (first.length >= PAGE) {
+        let count: number | null = null;
+        if (sameIdentity()) {
+          const list = await this.getThreadListResult();
+          const entry = list.threads.find((t) => t.with === otherHandle);
+          count = entry && Number.isFinite(entry.messageCount) ? (entry.messageCount as number) : null;
+        }
+        let offset = PAGE;
+        const remembered = this.tailOffsetByPeer.get(otherHandle) ?? null;
+        const hint = count !== null && count > 2 * PAGE ? count - PAGE : remembered !== null && remembered > PAGE ? remembered : null;
+        if (hint !== null) {
+          // Jump near the hinted tail; the walk below reaches the true end.
+          // A hint can OVERSHOOT (soft-deleted rows, stale cache): an empty
+          // page there is not the tail — fall back to the forward walk; a
+          // SHORT page there is the end, but refill so the panel still holds
+          // a full newest page.
+          let jump = hint;
+          let near = await readPage(jump);
+          if (!near) {
+            return { messages: [], error: true };
+          }
+          if (near.length > 0 && near.length < PAGE) {
+            jump = Math.max(0, jump - (PAGE - near.length));
+            near = await readPage(jump);
+            if (!near) {
+              return { messages: [], error: true };
+            }
+          }
+          if (near.length > 0) {
+            wireMessages = near;
+            offset = jump + PAGE;
+          }
+        }
+        let reachedEnd = false;
+        for (let pages = 0; pages < 50; pages++, offset += PAGE) {
+          const next = await readPage(offset);
+          if (!next) {
+            return { messages: [], error: true };
+          }
+          if (next.length === 0) { reachedEnd = true; break; }
+          wireMessages = wireMessages.concat(next).slice(-PAGE);
+          if (next.length < PAGE) { reachedEnd = true; break; }
+        }
+        if (!reachedEnd) {
+          return { messages: [], error: true }; // bound hit: not a claim about the tail
+        }
+        // Remember where the tail was for the next refresh of this peer.
+        this.tailOffsetByPeer.set(otherHandle, Math.max(0, offset - PAGE));
+      }
+      if (!sameIdentity()) {
         return { messages: [], error: true };
       }
-
       // KILL SWITCH (2026-08-09, take-stock Move 0a): do NOT advance the read
       // cursor from here. "Refreshing a thread" is not "the human saw it" —
       // Buddy's hide-on-close keeps this panel mounted, so background
@@ -1436,7 +1515,7 @@ class BuddyClient {
       // platform defines a principal-scoped acknowledgement (real message ID
       // + foreground visibility). docs/TAKE-STOCK-2026-08-09.md Move 0a.
 
-      const messages = wireMessages.map((m: any) => ({
+      const messages: VibeMessage[] = wireMessages.map((m: any): VibeMessage => ({
         id: m.id,
         from: m.from,
         to: m.to,
