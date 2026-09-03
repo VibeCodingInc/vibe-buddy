@@ -73,3 +73,30 @@ describe('thread loader reads the whole thread, newest included (buddy#17)', () 
     expect(calls.filter((c) => c.includes('with=them'))).toHaveLength(1);
   });
 });
+
+describe('a long thread that is not on the inbox page (archived / past 50 rows)', () => {
+  it('still shows its newest page by walking forward and keeping the tail', async () => {
+    const { buddyClient } = await import('../src/lib/vibeClient');
+    const client = buddyClient as any;
+    client.handle = 'vibetester1';
+    client.authToken = token();
+    // the inbox has no row for this thread: no served count
+    httpFetch.mockImplementation(async (url: string) => {
+      calls.push(String(url));
+      const u = new URL(String(url));
+      if (!u.searchParams.get('with')) {
+        return { ok: true, status: 200, json: async () => ({ success: true, threads: [] }) };
+      }
+      const all = Array.from({ length: 450 }, (_, i) => msg(i + 1));
+      const limit = Number(u.searchParams.get('limit') ?? 100);
+      const offset = Number(u.searchParams.get('offset') ?? 0);
+      const page = all.slice(offset, offset + limit);
+      return { ok: true, status: 200, json: async () => ({ success: true, messages: page, count: page.length, offset, limit }) };
+    });
+    const { messages, error } = await client.getThreadResult('them');
+    expect(error).toBe(false);
+    expect(messages).toHaveLength(PAGE);
+    expect(messages[messages.length - 1].id).toBe('m450');
+    expect(messages[0].id).toBe('m251');
+  });
+});

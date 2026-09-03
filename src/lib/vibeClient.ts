@@ -1445,6 +1445,21 @@ class BuddyClient {
             return { messages: [], error: true };
           }
           wireMessages = tail;
+        } else if (count === null) {
+          // Not on the inbox page (archived, or past its first 50 rows), so no
+          // served length. Walk forward and KEEP the newest page — the walk
+          // is bounded, but what it keeps is always the tail of what it read
+          // (codex on #18, third pass).
+          let offset = PAGE;
+          for (let pages = 1; pages < 50; pages++, offset += PAGE) {
+            const next = await readPage(offset);
+            if (!next) {
+              return { messages: [], error: true };
+            }
+            if (next.length === 0) break;
+            wireMessages = wireMessages.concat(next).slice(-PAGE);
+            if (next.length < PAGE) break;
+          }
         }
       }
 
