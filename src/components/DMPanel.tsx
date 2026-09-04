@@ -180,7 +180,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       const body =
         `join me: ${info.url}\n` +
         `to bring your agent, paste this into the session you are working in: ${joinLine(info.code)}`;
-      rememberCall({ url: info.url, code: info.code, from: chatWith });
+      rememberCall({ url: info.url, code: info.code, from: chatWith, thread: chatWith, work: them?.project ? { project: them.project } : undefined });
       const sent = await buddyClient.sendMessage(chatWith, body);
       if (!sent) throw new Error('the invite could not be sent');
       realtime.recordStoredMessageWith(chatWith);

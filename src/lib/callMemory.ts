@@ -27,6 +27,19 @@ export interface RememberedCall {
   code: string;
   /** Where it was started from, for the label: a project name or a handle. */
   from?: string;
+  /**
+   * The originating conversation (a /vibe handle), when the call was started
+   * from a thread. This is the RETURN ADDRESS: after the call, one action
+   * reopens exactly this thread (#329 — the participant returns to work).
+   */
+  thread?: string;
+  /**
+   * A private pointer to the work the call was about — project and branch of
+   * the session it was started from. Local only; never sent anywhere; never
+   * shown to the other participant. It exists so Buddy can put you back
+   * where you were, not so the room knows your machine.
+   */
+  work?: { project?: string; branch?: string };
   startedAt: number;
 }
 
@@ -56,6 +69,13 @@ export function getRememberedCall(now = Date.now()): RememberedCall | null {
       url: call.url,
       code: call.code,
       from: typeof call.from === 'string' ? call.from : undefined,
+      thread: typeof call.thread === 'string' && call.thread.trim() ? call.thread.trim() : undefined,
+      work: call.work && typeof call.work === 'object'
+        ? {
+            project: typeof call.work.project === 'string' ? call.work.project : undefined,
+            branch: typeof call.work.branch === 'string' ? call.work.branch : undefined,
+          }
+        : undefined,
       startedAt: call.startedAt,
     };
   } catch {
