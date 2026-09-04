@@ -497,10 +497,6 @@ export default function UnifiedBuddyList({
   // collections, so searching for your own partner showed them on screen
   // directly above "Nobody here matches", with Enter unable to open them
   // (codex P2). It is a row like any other: it filters, and it counts.
-  const noMatches =
-    !!q && filteredOrphanSessions.length === 0 &&
-    filteredActive.length === 0 && filteredAway.length === 0 &&
-    filteredOffline.length === 0 && filteredWaiting.length === 0;
 
   // Split live presence into humans vs. Seth's agent fleet. Humans stay in the
   // Online/Away lanes; every agent (active or away) collapses into one labeled
@@ -529,10 +525,25 @@ export default function UnifiedBuddyList({
     .filter((u) => joinedAt(u.firstSeen) >= newSince)
     .sort((a, b) => joinedAt(b.firstSeen) - joinedAt(a.firstSeen));
   const newSet = new Set(newHumans.map((u) => u.handle.toLowerCase()));
+  // A trace is a NEW row only when nothing else already presents that person:
+  // an existing conversation owns their row (FOR YOU when unread, RECENT
+  // otherwise). Traces filter by the query like every other row (codex on #20).
+  const matchTrace = (t: RecentTrace) =>
+    !q || t.handle.toLowerCase().includes(q) || (t.workingOn || '').toLowerCase().includes(q);
   const newTraces = recentlyHere
-    .filter((t) => joinedAt(t.firstSeen) >= newSince && !newSet.has(t.handle.toLowerCase()) && !isTestAccount(t.handle))
+    .filter((t) =>
+      joinedAt(t.firstSeen) >= newSince &&
+      !newSet.has(t.handle.toLowerCase()) &&
+      !isTestAccount(t.handle) &&
+      !threads.some((th) => th.with.toLowerCase() === t.handle.toLowerCase()) &&
+      matchTrace(t))
     .sort((a, b) => joinedAt(b.firstSeen) - joinedAt(a.firstSeen));
   const newCount = newHumans.length + newTraces.length;
+  const noMatches =
+    !!q && filteredOrphanSessions.length === 0 &&
+    filteredActive.length === 0 && filteredAway.length === 0 &&
+    filteredOffline.length === 0 && filteredWaiting.length === 0 &&
+    newTraces.length === 0;
   // A newcomer sits in NEW, not ONLINE/AWAY too — one row per person.
   const laneActive = humanActive.filter((u) => !newSet.has(u.handle.toLowerCase()));
   const laneAway = humanAway.filter((u) => !newSet.has(u.handle.toLowerCase()));
@@ -777,9 +788,11 @@ export default function UnifiedBuddyList({
     (composeQuery && !composeTargetPresented ? { handle: composeQuery } : undefined) ??
     (filteredWaiting[0] ? { handle: filteredWaiting[0].with } : undefined) ??
     (promotedAgents[0] ? { handle: promotedAgents[0].handle } : undefined) ??
-    (humanActive[0] ? { handle: humanActive[0].handle } : undefined) ??
+    (newHumans[0] ? { handle: newHumans[0].handle } : undefined) ??
+    (newTraces[0] ? { handle: newTraces[0].handle } : undefined) ??
+    (laneActive[0] ? { handle: laneActive[0].handle } : undefined) ??
     (filteredOrphanSessions[0] ? { handle: filteredOrphanSessions[0].parent, session: true } : undefined) ??
-    (humanAway[0] ? { handle: humanAway[0].handle } : undefined) ??
+    (laneAway[0] ? { handle: laneAway[0].handle } : undefined) ??
     (laneAgents[0] ? { handle: laneAgents[0].handle } : undefined) ??
     (filteredOffline[0] ? { handle: filteredOffline[0].with } : undefined);
 
@@ -840,7 +853,7 @@ export default function UnifiedBuddyList({
   // `threads`, not `offlineThreads`: an unread thread from an offline sender
   // lives in the WAITING block, and a window holding a waiting answer is not
   // an empty room.
-  const hasContent = users.length > 0 || sessions.length > 0 || threads.length > 0 || pairedWith;
+  const hasContent = users.length > 0 || sessions.length > 0 || threads.length > 0 || pairedWith || newTraces.length > 0;
 
   // The sessions block, decided once (lib/mySessionsState) and rendered from
   // ONE element in every branch that shows it — the quiet room, the
@@ -1733,12 +1746,19 @@ export default function UnifiedBuddyList({
                       thread={threadMap.get(user.handle)}
                       onArchive={archiveFor(threadMap.get(user.handle))}
                       isPaired={user.handle === pairedWith}
+                      onSessionView={user.handle === pairedWith && onSession && !sessionMap.has(user.handle) ? () => onSession(user.handle) : undefined}
                       myHandle={handle}
                       showDetails={showDetails}
                     />
                     <div style={{ color: color.faint, fontSize: size[11], padding: '0 4px 6px 44px' }}>
                       {joinedAgo(user.firstSeen)}
                     </div>
+                    {sessionMap.has(user.handle) && (
+                      <SessionRow
+                        session={sessionMap.get(user.handle)!}
+                        onSession={onSession}
+                      />
+                    )}
                   </div>
                 ))}
                 {newTraces.map((t) => (

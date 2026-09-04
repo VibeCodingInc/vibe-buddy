@@ -232,8 +232,15 @@ export const FIXTURES: Record<string, ListFixture> = {
     ...base,
     name: 'newcomers',
     users: newcomerHumans,
+    sessions: [
+      { handle: 'nova_demo/claude', parent: 'nova_demo', type: 'session', status: 'active', project: 'viewer', model: 'claude-fable-5', summary: 'first build of the viewer', turnCount: 3 } as SessionEntity,
+    ],
+    threads: [
+      { with: 'talked_demo', unread: 0, lastMessage: { from: 'alice_demo', body: 'welcome in', created_at: hoursAgo(1) } },
+    ],
     recentlyHere: [
       { handle: 'quill_demo', ago: '3h', workingOn: 'training user models', firstSeen: hoursAgo(5) },
+      { handle: 'talked_demo', ago: '2h', workingOn: 'already in a thread with you', firstSeen: hoursAgo(4) },
       { handle: 'veteran_demo', ago: '1h', workingOn: 'old hand', firstSeen: hoursAgo(24 * 90) },
     ],
   },

@@ -81,3 +81,17 @@ describe('NEW lane', () => {
     expect(screen.queryByText('veteran_demo')).toBeNull();       // an old trace is not a newcomer
   });
 });
+
+describe('NEW lane, integration (codex on #20)', () => {
+  it('a present newcomer keeps their session row beneath the card', () => {
+    mountFixture('newcomers');
+    expect(screen.getByText('nova_demo/claude')).toBeTruthy(); // the SessionRow renders parent/claude
+  });
+
+  it('a newcomer who already has a conversation is presented by that conversation, not twice', () => {
+    mountFixture('newcomers');
+    expect(screen.getAllByText('talked_demo').length).toBe(1);
+    expect(screen.queryByLabelText(/@talked_demo, joined/)).toBeNull(); // no NEW history row
+    expect(screen.getByText(/New · 2/)).toBeTruthy();                 // nova + quill only
+  });
+});
