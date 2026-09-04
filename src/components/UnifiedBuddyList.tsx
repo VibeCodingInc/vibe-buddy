@@ -449,11 +449,23 @@ export default function UnifiedBuddyList({
   // screen — hiding the box from a list bigger than its own threshold
   // (codex P2). Deduped, because one principal can hold a roster entry and a
   // thread and is still one row to find.
+  // Newcomer traces eligible for the NEW lane, BEFORE any query: people who
+  // joined in the last two days, stepped out, and have no conversation yet
+  // (a conversation owns their row). Pre-query so the room's content and the
+  // search threshold do not change with what is typed (codex pass 2 on #20).
+  const NEW_WINDOW_MS = 48 * 60 * 60 * 1000;
+  const newSince = Date.now() - NEW_WINDOW_MS;
+  const joinedAt = (v?: string) => (typeof v === 'string' ? Date.parse(v) : NaN);
+  const eligibleNewTraces = recentlyHere.filter((t) =>
+    joinedAt(t.firstSeen) >= newSince &&
+    !isTestAccount(t.handle) &&
+    !threads.some((th) => th.with.toLowerCase() === t.handle.toLowerCase()));
   const searchablePrincipals = new Set<string>([
     ...users.map((u) => u.handle.toLowerCase()),
     ...waiting.map((t) => t.with.toLowerCase()),
     ...offlineThreads.map((t) => t.with.toLowerCase()),
     ...orphanSessions.map((s) => s.parent.toLowerCase()),
+    ...eligibleNewTraces.map((t) => t.handle.toLowerCase()),
   ]);
   if (pairedWith) searchablePrincipals.add(pairedWith.toLowerCase());
   const showSearch = searchablePrincipals.size >= SEARCH_WORTH_IT;
@@ -497,16 +509,48 @@ export default function UnifiedBuddyList({
   // collections, so searching for your own partner showed them on screen
   // directly above "Nobody here matches", with Enter unable to open them
   // (codex P2). It is a row like any other: it filters, and it counts.
-  const noMatches =
-    !!q && filteredOrphanSessions.length === 0 &&
-    filteredActive.length === 0 && filteredAway.length === 0 &&
-    filteredOffline.length === 0 && filteredWaiting.length === 0;
 
   // Split live presence into humans vs. Seth's agent fleet. Humans stay in the
   // Online/Away lanes; every agent (active or away) collapses into one labeled
   // "Agents" lane so the fleet stops dominating the human board.
   const humanActive = filteredActive.filter((u) => !isAgent(u));
   const humanAway = filteredAway.filter((u) => !isAgent(u));
+
+  // ── NEW: people who joined in the last two days (Seth, 2026-09-04) ──────
+  // The welcome half of the metric: a stranger who just installed should be
+  // one tap from a first message. Evidence: the server's firstSeen (owner:
+  // platform; it is a timestamp, not a claim about reading). Present
+  // newcomers keep their live row and dot; a newcomer who has stepped out is
+  // rendered as history — no dot, joined-time first — never as presence.
+  const joinedAgo = (v?: string) => {
+    const t = joinedAt(v);
+    if (!Number.isFinite(t)) return 'joined recently';
+    const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (m < 60) return 'joined just now';
+    if (m < 48 * 60) return `joined ${Math.round(m / 60)}h ago`;
+    return `joined ${Math.round(m / 1440)}d ago`;
+  };
+  const newHumans = [...humanActive, ...humanAway]
+    .filter((u) => joinedAt(u.firstSeen) >= newSince)
+    .sort((a, b) => joinedAt(b.firstSeen) - joinedAt(a.firstSeen));
+  const newSet = new Set(newHumans.map((u) => u.handle.toLowerCase()));
+  // A trace is a NEW row only when nothing else already presents that person:
+  // an existing conversation owns their row (FOR YOU when unread, RECENT
+  // otherwise). Traces filter by the query like every other row (codex on #20).
+  const matchTrace = (t: RecentTrace) =>
+    !q || t.handle.toLowerCase().includes(q) || (t.workingOn || '').toLowerCase().includes(q);
+  const newTraces = eligibleNewTraces
+    .filter((t) => !newSet.has(t.handle.toLowerCase()) && matchTrace(t))
+    .sort((a, b) => joinedAt(b.firstSeen) - joinedAt(a.firstSeen));
+  const newCount = newHumans.length + newTraces.length;
+  const noMatches =
+    !!q && filteredOrphanSessions.length === 0 &&
+    filteredActive.length === 0 && filteredAway.length === 0 &&
+    filteredOffline.length === 0 && filteredWaiting.length === 0 &&
+    newTraces.length === 0;
+  // A newcomer sits in NEW, not ONLINE/AWAY too — one row per person.
+  const laneActive = humanActive.filter((u) => !newSet.has(u.handle.toLowerCase()));
+  const laneAway = humanAway.filter((u) => !newSet.has(u.handle.toLowerCase()));
   const agentUsers = [...filteredActive, ...filteredAway].filter((u) => isAgent(u));
   // (The Enter-target walk moved BELOW the botfile join: it must include the
   // agents promoted into the FOR YOU zone, which are derived from it.)
@@ -696,6 +740,7 @@ export default function UnifiedBuddyList({
     ...promotedAgents.map((u) => u.handle.toLowerCase()),
     ...laneAgents.map((u) => u.handle.toLowerCase()),
     ...filteredOffline.map((t) => t.with.toLowerCase()),
+    ...newTraces.map((t) => t.handle.toLowerCase()),
     // NOT orphan sessions (codex r6 P2): a session-only row routes to the
     // SESSION view, not the composer — it cannot stand in for the DM door.
   ]);
@@ -747,9 +792,11 @@ export default function UnifiedBuddyList({
     (composeQuery && !composeTargetPresented ? { handle: composeQuery } : undefined) ??
     (filteredWaiting[0] ? { handle: filteredWaiting[0].with } : undefined) ??
     (promotedAgents[0] ? { handle: promotedAgents[0].handle } : undefined) ??
-    (humanActive[0] ? { handle: humanActive[0].handle } : undefined) ??
+    (newHumans[0] ? { handle: newHumans[0].handle } : undefined) ??
+    (newTraces[0] ? { handle: newTraces[0].handle } : undefined) ??
+    (laneActive[0] ? { handle: laneActive[0].handle } : undefined) ??
     (filteredOrphanSessions[0] ? { handle: filteredOrphanSessions[0].parent, session: true } : undefined) ??
-    (humanAway[0] ? { handle: humanAway[0].handle } : undefined) ??
+    (laneAway[0] ? { handle: laneAway[0].handle } : undefined) ??
     (laneAgents[0] ? { handle: laneAgents[0].handle } : undefined) ??
     (filteredOffline[0] ? { handle: filteredOffline[0].with } : undefined);
 
@@ -800,8 +847,9 @@ export default function UnifiedBuddyList({
   // Count sections for smart header display
   const sectionCount = [
     filteredWaiting.length > 0 ? 1 : 0,
-    humanActive.length > 0 ? 1 : 0,
-    humanAway.length > 0 ? 1 : 0,
+    newCount > 0 ? 1 : 0,
+    laneActive.length > 0 ? 1 : 0,
+    laneAway.length > 0 ? 1 : 0,
     agentUsers.length > 0 ? 1 : 0,
     filteredOffline.length > 0 ? 1 : 0,
   ].reduce((a, b) => a + b, 0);
@@ -809,7 +857,7 @@ export default function UnifiedBuddyList({
   // `threads`, not `offlineThreads`: an unread thread from an offline sender
   // lives in the WAITING block, and a window holding a waiting answer is not
   // an empty room.
-  const hasContent = users.length > 0 || sessions.length > 0 || threads.length > 0 || pairedWith;
+  const hasContent = users.length > 0 || sessions.length > 0 || threads.length > 0 || pairedWith || eligibleNewTraces.length > 0;
 
   // The sessions block, decided once (lib/mySessionsState) and rendered from
   // ONE element in every branch that shows it — the quiet room, the
@@ -1679,8 +1727,87 @@ export default function UnifiedBuddyList({
             ]}
             {mySessionsEl}
 
+            {/* NEW — joined in the last two days. Present newcomers keep the live
+                row; absent ones are history rows: joined-time first, no dot. */}
+            {newCount > 0 && (
+              <>
+                <div style={{
+                  fontSize: '9px',
+                  fontWeight: 600,
+                  color: color.faint,
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px',
+                  padding: pairedWith ? '8px 4px 4px' : '4px 4px 4px',
+                }}>
+                  New · {newCount}
+                </div>
+                {newHumans.map((user) => (
+                  <div key={`new-${user.handle}`}>
+                    <UserRow
+                      user={user}
+                      onClick={() => onUserClick(user.handle)}
+                      onSummon={summonable.has(user.handle.toLowerCase()) ? () => setSummonTarget(user.handle) : undefined}
+                      thread={threadMap.get(user.handle)}
+                      onArchive={archiveFor(threadMap.get(user.handle))}
+                      isPaired={user.handle === pairedWith}
+                      onSessionView={user.handle === pairedWith && onSession && !sessionMap.has(user.handle) ? () => onSession(user.handle) : undefined}
+                      myHandle={handle}
+                      showDetails={showDetails}
+                    />
+                    <div style={{ color: color.faint, fontSize: size[11], padding: '0 4px 6px 44px' }}>
+                      {joinedAgo(user.firstSeen)}
+                    </div>
+                    {sessionMap.has(user.handle) && (
+                      <SessionRow
+                        session={sessionMap.get(user.handle)!}
+                        onSession={onSession}
+                      />
+                    )}
+                  </div>
+                ))}
+                {newTraces.map((t) => (
+                  <div
+                    key={`new-trace-${t.handle}`}
+                    className="vibe-press"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`@${t.handle}, ${joinedAgo(t.firstSeen)}, here ${t.ago} ago`}
+                    onKeyDown={pressOnKey(() => onUserClick(t.handle))}
+                    onClick={() => onUserClick(t.handle)}
+                    style={{
+                      display: 'flex',
+                      gap: space[2],
+                      alignItems: 'baseline',
+                      padding: `${space[1]}px ${space[2]}px`,
+                      cursor: 'pointer',
+                      borderRadius: radius.sm,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = color.panel)}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <span style={{ color: color.faint, fontSize: size[11], whiteSpace: 'nowrap' }}>
+                      {joinedAgo(t.firstSeen)}
+                    </span>
+                    <span style={{ color: color.dim, fontSize: size[12], fontWeight: 500 }}>
+                      {t.handle}
+                    </span>
+                    <span style={{
+                      color: color.faint,
+                      fontSize: size[11],
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      flex: 1,
+                    }}>
+                      {t.ago ? `here ${t.ago} ago` : ''}{t.workingOn ? ` · ${t.workingOn}` : ''}
+                    </span>
+                  </div>
+                ))}
+              </>
+            )}
+
             {/* Online users (humans) */}
-            {humanActive.length > 0 && (
+            {laneActive.length > 0 && (
               <>
                 {sectionCount > 1 && (
                   <div style={{
@@ -1691,7 +1818,7 @@ export default function UnifiedBuddyList({
                     letterSpacing: '1px',
                     padding: pairedWith ? '8px 4px 4px' : '4px 4px 4px',
                   }}>
-                    Online · {humanActive.length}
+                    Online · {laneActive.length}
                   </div>
                 )}
                 {/* The ONLY lane that renders a SessionRow beneath the row —
@@ -1699,7 +1826,7 @@ export default function UnifiedBuddyList({
                     Watch action. Suppressing it everywhere stranded a paired
                     partner who was unread, away or an agent exactly when a
                     live session existed (codex P2). */}
-                {humanActive.map((user) => (
+                {laneActive.map((user) => (
                   <div key={user.handle}>
                     <UserRow
                       user={user}
@@ -1747,7 +1874,7 @@ export default function UnifiedBuddyList({
             )}
 
             {/* Away users (humans) */}
-            {humanAway.length > 0 && (
+            {laneAway.length > 0 && (
               <>
                 {sectionCount > 1 && (
                   <div style={{
@@ -1758,10 +1885,10 @@ export default function UnifiedBuddyList({
                     letterSpacing: '1px',
                     padding: '8px 4px 4px',
                   }}>
-                    Away · {humanAway.length}
+                    Away · {laneAway.length}
                   </div>
                 )}
-                {humanAway.map((user) => (
+                {laneAway.map((user) => (
                   <UserRow
                     key={user.handle}
                     user={user}
