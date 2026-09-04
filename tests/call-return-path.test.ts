@@ -11,10 +11,10 @@ beforeEach(() => { store.clear(); forgetCall(); });
 
 describe('call memory carries the return address', () => {
   it('keeps the originating thread and the private work pointer', () => {
-    rememberCall({ url: 'https://meet.google.com/abc-defg-hij', code: 'abc-defg-hij', from: 'fixture_peer_a', thread: 'fixture_peer_a', work: { project: 'vibe-buddy', branch: 'feat/call-return-path' } });
+    rememberCall({ url: 'https://meet.google.com/abc-defg-hij', code: 'abc-defg-hij', from: 'payments', work: { project: 'payments', sessionId: 'sess_1' } });
     const c = getRememberedCall()!;
-    expect(c.thread).toBe('fixture_peer_a');
-    expect(c.work).toEqual({ project: 'vibe-buddy', branch: 'feat/call-return-path' });
+    expect(c.thread).toBeUndefined();
+    expect(c.work).toEqual({ project: 'payments', sessionId: 'sess_1' });
   });
   it('a call started from a session has a work pointer and no thread', () => {
     rememberCall({ url: 'u', code: 'c', from: 'payments', work: { project: 'payments' } });
@@ -31,6 +31,22 @@ describe('call memory carries the return address', () => {
     const c = getRememberedCall()!;
     expect(c.thread).toBeUndefined();
     expect(c.work).toBeUndefined();
+  });
+});
+
+describe('the work pointer is yours, never the other participant\'s', () => {
+  it('a call started from a conversation records the thread and NO work pointer', async () => {
+    const fs = await import('node:fs'); const path = await import('node:path');
+    const dm = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'DMPanel.tsx'), 'utf8');
+    const call = dm.match(/rememberCall\(\{[^}]*\}\)/)![0];
+    expect(call).toMatch(/thread: chatWith/);
+    expect(call).not.toMatch(/work:/);
+    expect(call).not.toMatch(/them/);
+  });
+  it('a call started from your session records that session as the origin', async () => {
+    const fs = await import('node:fs'); const path = await import('node:path');
+    const ms = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'list', 'MySessions.tsx'), 'utf8');
+    expect(ms).toMatch(/rememberCall\(\{ url: info\.url, code: info\.code, from: session\.project, work: \{ project: session\.project, sessionId: session\.sessionId \} \}\)/);
   });
 });
 

@@ -34,12 +34,17 @@ export interface RememberedCall {
    */
   thread?: string;
   /**
-   * A private pointer to the work the call was about — project and branch of
-   * the session it was started from. Local only; never sent anywhere; never
-   * shown to the other participant. It exists so Buddy can put you back
+   * A private pointer to YOUR OWN work the call was about — the session it
+   * was started from (its id and project). Local only; never sent anywhere;
+   * never shown to the other participant. It exists so Buddy can put you back
    * where you were, not so the room knows your machine.
+   *
+   * It is set only when the local origin is actually known (a call started
+   * from one of your session rows). A call started from a conversation does
+   * not know your work location, so it records none — the other person's
+   * project is THEIR work, never a stand-in for yours (Astra, #22 read).
    */
-  work?: { project?: string; branch?: string };
+  work?: { project?: string; sessionId?: string };
   /**
    * The account that started the call. The return action is offered only to
    * this account: after a sign-out, the next person must not inherit a way
@@ -79,7 +84,7 @@ export function getRememberedCall(now = Date.now()): RememberedCall | null {
       work: call.work && typeof call.work === 'object'
         ? {
             project: typeof call.work.project === 'string' ? call.work.project : undefined,
-            branch: typeof call.work.branch === 'string' ? call.work.branch : undefined,
+            sessionId: typeof call.work.sessionId === 'string' ? call.work.sessionId : undefined,
           }
         : undefined,
       account: typeof call.account === 'string' && call.account.trim() ? call.account.trim() : undefined,
