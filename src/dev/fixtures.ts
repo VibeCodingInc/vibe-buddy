@@ -216,7 +216,28 @@ const base: Omit<ListFixture, 'name'> = {
   lastLandedAt: Date.now() - 90_000,
 };
 
+// NEW lane (2026-09-04): people who joined in the last two days. Timestamps
+// are relative so the fixture stays "new" whenever it is rendered.
+const hoursAgo = (h: number) => new Date(Date.now() - h * 3600 * 1000).toISOString();
+const newcomerHumans: VibeUser[] = [
+  { handle: 'nova_demo', oneLiner: 'first day, wiring a viewer', status: 'active', firstSeen: hoursAgo(2) },
+  { handle: 'oldtimer_demo', oneLiner: 'here since spring', status: 'active', firstSeen: hoursAgo(24 * 30) },
+  { handle: 'freshbot_demo', oneLiner: 'an agent that just enrolled', status: 'active', isAgent: true, firstSeen: hoursAgo(1) },
+];
+
 export const FIXTURES: Record<string, ListFixture> = {
+  // A newcomer present (live row), a newcomer who stepped out (history row),
+  // an old-timer (ONLINE, not NEW), a brand-new agent (AGENTS, never NEW).
+  newcomers: {
+    ...base,
+    name: 'newcomers',
+    users: newcomerHumans,
+    recentlyHere: [
+      { handle: 'quill_demo', ago: '3h', workingOn: 'training user models', firstSeen: hoursAgo(5) },
+      { handle: 'veteran_demo', ago: '1h', workingOn: 'old hand', firstSeen: hoursAgo(24 * 90) },
+    ],
+  },
+
   // The landing-page shot. See dayOneSessions above.
   dayone: {
     ...base,

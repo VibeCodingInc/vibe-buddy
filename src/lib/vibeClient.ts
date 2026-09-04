@@ -77,6 +77,8 @@ export interface RecentTrace {
   /** Server-formatted, e.g. "2h" — display only, never parsed. */
   ago: string;
   workingOn?: string;
+  /** Served first-seen timestamp — lets a newcomer who has stepped out still be welcomed. */
+  firstSeen?: string;
 }
 
 export interface VibeUser {
@@ -955,6 +957,7 @@ class BuddyClient {
           handle: u.handle,
           ago: u.ago || '',
           workingOn: u.workingOn || undefined,
+          firstSeen: typeof u.firstSeen === 'string' ? u.firstSeen : undefined,
         }));
 
       return { users: [...active, ...away, ...agents], sessions, recentlyHere };
