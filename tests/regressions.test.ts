@@ -2098,7 +2098,8 @@ describe('the interval leads with the exchange', () => {
     const src = listSrc();
     const mountAt = src.indexOf('{mySessionsEl}');
     const zoneAt = src.indexOf('For you · {filteredWaiting.length + zoneSessionCount}');
-    const onlineAt = src.indexOf('Online · {humanActive.length}');
+    // NEW lane (2026-09-04): the ONLINE lane renders laneActive — humanActive minus newcomers.
+    const onlineAt = src.indexOf('Online · {laneActive.length}');
     expect(mountAt, 'the single mount is missing').toBeGreaterThan(-1);
     // Exactly one — a second call site would reintroduce the remount.
     expect((src.match(/\{mySessionsEl\}/g) || []).length).toBe(1);
