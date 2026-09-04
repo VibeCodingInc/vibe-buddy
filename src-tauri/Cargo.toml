@@ -1,6 +1,6 @@
 [package]
 name = "vibe-buddy"
-version = "0.5.68"
+version = "0.5.69"
 license = "MIT"
 description = "The /vibe buddy list — see who's building what, DM with context"
 authors = ["seth goldstein"]
