@@ -2288,14 +2288,15 @@ describe('social polish stays honest (2026-08-03 follow-up)', () => {
     expect(list).not.toMatch(/u\.handle !== pairedWith/);
     // A pair authorizes the session view whether or not presence reports a
     // SessionEntity, so the action survives the card's deletion.
-    // Suppressed in exactly ONE lane — the only one that renders a
-    // SessionRow. Everywhere else the action must survive, or a paired
-    // partner who is unread, away or an agent loses access precisely when a
-    // live session exists (codex P2).
-    expect((list.match(/onSessionView=\{[^}]*!sessionMap\.has/g) || []).length).toBe(1);
-    // Five call sites: waiting, the FOR YOU bound-wanting promotion (#50),
-    // online, away, agents.
-    expect((list.match(/onSessionView=/g) || []).length).toBe(5);
+    // Suppressed only in the lanes that render a SessionRow beneath the card
+    // — ONLINE, and since 2026-09-04 the NEW lane (a present newcomer keeps
+    // their session row). Everywhere else the action must survive, or a
+    // paired partner who is unread, away or an agent loses access precisely
+    // when a live session exists (codex P2).
+    expect((list.match(/onSessionView=\{[^}]*!sessionMap\.has/g) || []).length).toBe(2);
+    // Six call sites: waiting, the FOR YOU bound-wanting promotion (#50),
+    // NEW (2026-09-04), online, away, agents.
+    expect((list.match(/onSessionView=/g) || []).length).toBe(6);
     // State is not an action: 'paired' stays a plain chip and the action is
     // its own control, borrowing SessionRow's word rather than minting a
     // second name for opening a session (codex P2).
@@ -2627,9 +2628,10 @@ describe('orphan session rows are searchable rows (codex P2)', () => {
     expect(src).toMatch(/filteredOrphanSessions\[0\] \? \{ handle: filteredOrphanSessions\[0\]\.parent, session: true \}/);
     expect(src).toMatch(/if \(enterTarget\.session\) onSession\?\.\(enterTarget\.handle\)/);
     // Render order: the FOR YOU zone (waiting, then promoted bound-wanting
-    // agents), Online, Sessions, Away, Agents, Recent.
-    const order = ['filteredWaiting[0]', 'promotedAgents[0]', 'humanActive[0]',
-      'filteredOrphanSessions[0]', 'humanAway[0]', 'laneAgents[0]', 'filteredOffline[0]']
+    // agents), NEW (people, then traces — 2026-09-04), Online, Sessions,
+    // Away, Agents, Recent.
+    const order = ['filteredWaiting[0]', 'promotedAgents[0]', 'newHumans[0]', 'newTraces[0]', 'laneActive[0]',
+      'filteredOrphanSessions[0]', 'laneAway[0]', 'laneAgents[0]', 'filteredOffline[0]']
       .map((k) => src.indexOf(k, src.indexOf('const enterTarget')));
     expect(order.every((i) => i > -1)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
