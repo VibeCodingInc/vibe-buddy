@@ -449,11 +449,23 @@ export default function UnifiedBuddyList({
   // screen — hiding the box from a list bigger than its own threshold
   // (codex P2). Deduped, because one principal can hold a roster entry and a
   // thread and is still one row to find.
+  // Newcomer traces eligible for the NEW lane, BEFORE any query: people who
+  // joined in the last two days, stepped out, and have no conversation yet
+  // (a conversation owns their row). Pre-query so the room's content and the
+  // search threshold do not change with what is typed (codex pass 2 on #20).
+  const NEW_WINDOW_MS = 48 * 60 * 60 * 1000;
+  const newSince = Date.now() - NEW_WINDOW_MS;
+  const joinedAt = (v?: string) => (typeof v === 'string' ? Date.parse(v) : NaN);
+  const eligibleNewTraces = recentlyHere.filter((t) =>
+    joinedAt(t.firstSeen) >= newSince &&
+    !isTestAccount(t.handle) &&
+    !threads.some((th) => th.with.toLowerCase() === t.handle.toLowerCase()));
   const searchablePrincipals = new Set<string>([
     ...users.map((u) => u.handle.toLowerCase()),
     ...waiting.map((t) => t.with.toLowerCase()),
     ...offlineThreads.map((t) => t.with.toLowerCase()),
     ...orphanSessions.map((s) => s.parent.toLowerCase()),
+    ...eligibleNewTraces.map((t) => t.handle.toLowerCase()),
   ]);
   if (pairedWith) searchablePrincipals.add(pairedWith.toLowerCase());
   const showSearch = searchablePrincipals.size >= SEARCH_WORTH_IT;
@@ -510,9 +522,6 @@ export default function UnifiedBuddyList({
   // platform; it is a timestamp, not a claim about reading). Present
   // newcomers keep their live row and dot; a newcomer who has stepped out is
   // rendered as history — no dot, joined-time first — never as presence.
-  const NEW_WINDOW_MS = 48 * 60 * 60 * 1000;
-  const newSince = Date.now() - NEW_WINDOW_MS;
-  const joinedAt = (v?: string) => (typeof v === 'string' ? Date.parse(v) : NaN);
   const joinedAgo = (v?: string) => {
     const t = joinedAt(v);
     if (!Number.isFinite(t)) return 'joined recently';
@@ -530,13 +539,8 @@ export default function UnifiedBuddyList({
   // otherwise). Traces filter by the query like every other row (codex on #20).
   const matchTrace = (t: RecentTrace) =>
     !q || t.handle.toLowerCase().includes(q) || (t.workingOn || '').toLowerCase().includes(q);
-  const newTraces = recentlyHere
-    .filter((t) =>
-      joinedAt(t.firstSeen) >= newSince &&
-      !newSet.has(t.handle.toLowerCase()) &&
-      !isTestAccount(t.handle) &&
-      !threads.some((th) => th.with.toLowerCase() === t.handle.toLowerCase()) &&
-      matchTrace(t))
+  const newTraces = eligibleNewTraces
+    .filter((t) => !newSet.has(t.handle.toLowerCase()) && matchTrace(t))
     .sort((a, b) => joinedAt(b.firstSeen) - joinedAt(a.firstSeen));
   const newCount = newHumans.length + newTraces.length;
   const noMatches =
@@ -853,7 +857,7 @@ export default function UnifiedBuddyList({
   // `threads`, not `offlineThreads`: an unread thread from an offline sender
   // lives in the WAITING block, and a window holding a waiting answer is not
   // an empty room.
-  const hasContent = users.length > 0 || sessions.length > 0 || threads.length > 0 || pairedWith || newTraces.length > 0;
+  const hasContent = users.length > 0 || sessions.length > 0 || threads.length > 0 || pairedWith || eligibleNewTraces.length > 0;
 
   // The sessions block, decided once (lib/mySessionsState) and rendered from
   // ONE element in every branch that shows it — the quiet room, the

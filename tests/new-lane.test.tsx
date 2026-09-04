@@ -95,3 +95,19 @@ describe('NEW lane, integration (codex on #20)', () => {
     expect(screen.getByText(/New · 2/)).toBeTruthy();                 // nova + quill only
   });
 });
+
+describe('NEW lane, search (codex pass 2 on #20)', () => {
+  it('a query matching no newcomer says "nobody matches" instead of resurfacing the quiet room', async () => {
+    const { FIXTURES: F } = await import('../src/dev/fixtures');
+    const only = { ...F.newcomers, users: [], sessions: [], threads: [] }; // traces are the only content
+    (F as any).__only = only;
+    mountFixture('__only' as any);
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(screen.getByRole('button', { name: 'Search people and sessions' }));
+    const box = screen.getByPlaceholderText(/Search the room/i) as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'zzz-nobody' } });
+    expect(screen.queryByText('quill_demo')).toBeNull();
+    expect(screen.getByText(/nobody here matches/i)).toBeTruthy();
+    delete (F as any).__only;
+  });
+});
