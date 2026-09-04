@@ -1,7 +1,7 @@
 {
   "name": "vibe-buddy",
   "private": true,
-  "version": "0.5.69",
+  "version": "0.5.70",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1421",
