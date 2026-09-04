@@ -40,6 +40,12 @@ export interface RememberedCall {
    * where you were, not so the room knows your machine.
    */
   work?: { project?: string; branch?: string };
+  /**
+   * The account that started the call. The return action is offered only to
+   * this account: after a sign-out, the next person must not inherit a way
+   * into someone else's conversation (codex P2 on #22).
+   */
+  account?: string;
   startedAt: number;
 }
 
@@ -76,6 +82,7 @@ export function getRememberedCall(now = Date.now()): RememberedCall | null {
             branch: typeof call.work.branch === 'string' ? call.work.branch : undefined,
           }
         : undefined,
+      account: typeof call.account === 'string' && call.account.trim() ? call.account.trim() : undefined,
       startedAt: call.startedAt,
     };
   } catch {

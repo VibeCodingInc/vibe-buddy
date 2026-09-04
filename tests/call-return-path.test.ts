@@ -22,6 +22,10 @@ describe('call memory carries the return address', () => {
     expect(c.thread).toBeUndefined();
     expect(c.work?.project).toBe('payments');
   });
+  it('remembers which account started the call', () => {
+    rememberCall({ url: 'u', code: 'c', from: 'fixture_peer_a', thread: 'fixture_peer_a', account: 'fixture_me' });
+    expect(getRememberedCall()!.account).toBe('fixture_me');
+  });
   it('junk in storage does not become a return address', () => {
     store.set('buddy_last_call', JSON.stringify({ url: 'u', code: 'c', startedAt: Date.now(), thread: 42, work: 'nope' }));
     const c = getRememberedCall()!;
@@ -36,7 +40,20 @@ describe('the notice offers one way back', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8');
     const i = src.indexOf("label: 'back to the conversation'");
     expect(i).toBeGreaterThan(-1);
-    expect(src.slice(i - 200, i)).toMatch(/lastCall\.thread\s*\?/);
+    expect(src.slice(i - 200, i)).toMatch(/lastCall\.thread && lastCall\.account === handle/);
     expect(src.slice(i, i + 200)).toMatch(/setView\(\{ type: 'dm', chatWith: lastCall\.thread! \}\)/);
+  });
+  it('the way back belongs to the account that started the call (codex P2, #22)', async () => {
+    const fs = await import('node:fs'); const path = await import('node:path');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8');
+    const i = src.indexOf("label: 'back to the conversation'");
+    expect(src.slice(i - 200, i)).toMatch(/lastCall\.account === handle/);
+    // and identity teardown forgets the call, so the next person inherits no door
+    const j = src.indexOf('const clearIdentityState = useCallback(() => {');
+    expect(src.slice(j, j + 400)).toMatch(/forgetCall\(\);/);
+    expect(src.slice(j, j + 400)).toMatch(/setLastCall\(null\);/);
+    // DMPanel records the account when it remembers the call
+    const dm = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'DMPanel.tsx'), 'utf8');
+    expect(dm).toMatch(/rememberCall\(\{[^}]*account: handle/);
   });
 });

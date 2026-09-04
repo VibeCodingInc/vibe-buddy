@@ -442,6 +442,10 @@ export default function App() {
    */
   const clearIdentityState = useCallback(() => {
     resetArrivals();
+    // The remembered call is per-person: its return address opens a
+    // conversation, and the next account must not inherit that door.
+    forgetCall();
+    setLastCall(null);
     setUsers([]);
     setThreadsCertain(false);
     setRecentlyHere([]);
@@ -1436,7 +1440,7 @@ export default function App() {
                   // The return address (#329): a call started from a thread
                   // ends by going back to that exact thread. One action, no
                   // hunting; the private work pointer rides along unshown.
-                  ...(lastCall.thread
+                  ...(lastCall.thread && lastCall.account === handle
                     ? [{
                         label: 'back to the conversation',
                         onClick: () => setView({ type: 'dm', chatWith: lastCall.thread! }),
