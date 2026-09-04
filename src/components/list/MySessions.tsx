@@ -458,7 +458,7 @@ export function MySessionRow({ session, ageMs, stale = false, snapshotAgeMs, cwd
         sessionContext({ project: session.project, cwd: session.cwd, workingOn: session.workingOn }),
       );
       // Remember it, so closing the toast does not lose the link.
-      rememberCall({ url: info.url, code: info.code, from: session.project });
+      rememberCall({ url: info.url, code: info.code, from: session.project, work: { project: session.project, sessionId: session.sessionId } });
       // The paste line IS the feature: it is what makes the agent already
       // working in this cwd walk into the room knowing the work. Buddy cannot
       // put a brain in the bot; the session the user pastes into is the brain.

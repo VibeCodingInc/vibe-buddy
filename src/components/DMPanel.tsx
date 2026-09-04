@@ -180,7 +180,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       const body =
         `join me: ${info.url}\n` +
         `to bring your agent, paste this into the session you are working in: ${joinLine(info.code)}`;
-      rememberCall({ url: info.url, code: info.code, from: chatWith });
+      // The return address is this thread. No work pointer: a conversation does
+      // not know which of your sessions the call is about, and the other
+      // person's project is their work, not yours.
+      rememberCall({ url: info.url, code: info.code, from: chatWith, thread: chatWith, account: handle });
       const sent = await buddyClient.sendMessage(chatWith, body);
       if (!sent) throw new Error('the invite could not be sent');
       realtime.recordStoredMessageWith(chatWith);
