@@ -346,7 +346,7 @@ pub fn mind_trace(event: String, meta: Value) {
 #[cfg(test)]#[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
 
@@ -639,10 +639,33 @@ mod tests {
         let redirector_address = redirector.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = redirector.accept().unwrap();
+            // Read the whole request before answering. Answering — and closing —
+            // while the client is still writing its body made the client see a
+            // torn connection under CI load (hyper UnexpectedMessage), a flake
+            // that had nothing to do with the redirect rule under test.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let mut body_len = 0usize;
+            let mut header_end = None;
+            loop {
+                let n = match stream.read(&mut chunk) { Ok(0) => break, Ok(n) => n, Err(_) => break };
+                buf.extend_from_slice(&chunk[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(pos + 4);
+                        let headers = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+                        body_len = headers.lines()
+                            .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                    }
+                }
+                if let Some(h) = header_end { if buf.len() >= h + body_len { break; } }
+            }
             let response = format!(
                 "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target_address}/escaped\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
             stream.write_all(response.as_bytes()).unwrap();
+            let _ = stream.flush();
         });
 
         let client = mind_client(MindRoute::Facet).unwrap();
