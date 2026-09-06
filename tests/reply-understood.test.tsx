@@ -162,3 +162,25 @@ describe('codex round 1', () => {
     expect(await screen.findByTestId('answers-line')).toBeTruthy();
   });
 });
+
+describe('codex round 2', () => {
+  it('a served operator that is a principal id is never shown as a handle', async () => {
+    await mount([asked, answer({ id: 'msg_e', actor: { kind: 'agent', operator: '3f2b1c9a-1111-4c2d-9e8f-000000000001' } })]);
+    const label = screen.getByTestId('acting-for').textContent || '';
+    expect(label).toMatch(/acting under a person's grant/i);
+    expect(label).not.toMatch(/3f2b1c9a|@/);
+  });
+  it('a previous folder failure does not suppress the action for a new binding', async () => {
+    bindings = [theBinding]; sessions = []; revealError = 'gone';
+    let incoming: ((msgs: VibeMessage[]) => void) | null = null;
+    (realtime.openDM as unknown as { mockImplementation: (f: (t: string, cb: (msgs: VibeMessage[]) => void) => void) => void }).mockImplementation((_t, cb) => { incoming = cb; });
+    await mount([asked, answer()]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show the folder' }));
+    await screen.findByTestId('back-error');
+    revealError = null;
+    bindings = [{ ...theBinding, messageId: 'msg_q2', cwd: '/Users/ada/Projects/other' }];
+    await act(async () => { incoming!([asked, answer(), { ...answer({ id: 'msg_a2' }), replyTo: { id: 'msg_q2', from: ME, text: 'q2' } }]); await new Promise((r) => setTimeout(r, 30)); });
+    expect(screen.queryByTestId('back-error')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Show the folder' })).toBeTruthy();
+  });
+});

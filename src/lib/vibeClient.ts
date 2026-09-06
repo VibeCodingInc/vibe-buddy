@@ -228,6 +228,8 @@ export interface VibeThread {
   /** Served message count — addresses the newest page of a long thread (buddy#17). */
   messageCount?: number;
   lastMessage?: {
+    /** Served id of the newest message — the only thing that identifies it (never its text). */
+    id?: string;
     from: string;
     body: string;
     created_at: string;
@@ -1194,6 +1196,7 @@ class BuddyClient {
         messageCount: Number.isFinite(t.message_count) ? t.message_count : undefined,
         lastMessage: t.last_message
           ? {
+              id: typeof t.last_message.id === 'string' ? t.last_message.id : undefined,
               from: t.last_message.from,
               body: t.last_message.body,
               created_at: t.last_message.created_at,

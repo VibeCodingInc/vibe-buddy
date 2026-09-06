@@ -234,6 +234,8 @@ interface ThreadInfo {
   with: string;
   unread: number;
   lastMessage?: {
+    /** Served id of the newest message; enrichment is keyed to it, never to text. */
+    id?: string;
     from: string;
     body: string;
   };
@@ -247,7 +249,7 @@ export function checkAndNotify(
    * replacement title/body, or null for the ordinary banner. A rejection is
    * the ordinary banner too; a banner is never lost to enrichment.
    */
-  describe?: (thread: string, trigger: { from: string; body: string }) => Promise<{ title: string; body: string } | null>,
+  describe?: (thread: string, trigger: { id?: string; from: string; body: string }) => Promise<{ title: string; body: string } | null>,
 ): void {
   // Update dock badge regardless of notification permission
   const totalUnread = threads.reduce((sum, t) => sum + t.unread, 0);
@@ -295,7 +297,7 @@ export function checkAndNotify(
         // message and let a reply pass as the wrong identity (codex P1).
         const owner = bannerOwner;
         const w = t.with;
-        const trigger = { from: t.lastMessage.from, body: t.lastMessage.body };
+        const trigger = { id: t.lastMessage.id, from: t.lastMessage.from, body: t.lastMessage.body };
         void describe(w, trigger)
           .then((d) => { if (bannerOwner !== owner) return; deliver(d ? { ...banner, title: d.title, body: d.body } : banner); })
           .catch(() => { if (bannerOwner !== owner) return; deliver(banner); });

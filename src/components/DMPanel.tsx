@@ -410,13 +410,15 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const [binding, setBinding] = useState<ReturnBinding | null>(null);
   const [back, setBack] = useState<ReturnAction>({ kind: 'none' });
   const [backError, setBackError] = useState<string | null>(null);
+  // An error belongs to the binding that failed; a new binding starts clean.
+  useEffect(() => { setBackError(null); }, [binding?.messageId, binding?.cwd]);
   // Re-read on every change in the thread: the terminal may write a binding
   // after this conversation opened (codex P2).
   useEffect(() => {
     let alive = true;
     loadReturnBindings(handle, true).then((list) => { if (alive) setBinding(bindingFor(chatWith, list)); }).catch(() => {});
     return () => { alive = false; };
-  }, [handle, chatWith, messages.length]);
+  }, [handle, chatWith, messages.length > 0 ? messages[messages.length - 1].id : '']);
   const hasVerifiedAnswer = Boolean(binding && messages.some((mm) => answersYourAsk(mm, binding, chatWith)));
   useEffect(() => {
     if (!binding || !hasVerifiedAnswer) { setBack({ kind: 'none' }); return; }
@@ -1036,7 +1038,13 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                   different fact (the identity endpoint) and is not this. */}
               {!isMe && msg.actor && msg.actor.kind === 'agent' && msg.actor.operator && (
                 <div data-testid="acting-for" style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
-                  acting for @{msg.actor.operator}
+                  {/* The served operator is a PRINCIPAL id, not a handle
+                      (message-service deriveActor). Without a served
+                      handle we say the fact we have — sent under a
+                      person's grant — and never invent a name. */}
+                  {/^[a-z0-9_-]{1,39}$/i.test(msg.actor.operator) && !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(msg.actor.operator)
+                    ? `acting for @${msg.actor.operator}`
+                    : "acting under a person's grant"}
                 </div>
               )}
               <div

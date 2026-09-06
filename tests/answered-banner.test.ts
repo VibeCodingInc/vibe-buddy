@@ -16,7 +16,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ show: async () => {}, unminimize: async () => {}, setFocus: async () => {} }) }));
 
 import { checkAndNotify, resetNotificationState, hasNotificationPermission, setNotificationOwner } from '../src/lib/notifications';
-import { answeredBanner, resetReturnBindings } from '../src/lib/returnBindings';
+import { answeredBanner, resetReturnBindings, pickTriggering } from '../src/lib/returnBindings';
 
 const thread = (unread: number) => [{ with: 'linus', unread, lastMessage: { from: 'linus', body: 'exponential, three tries.' } }];
 const tick = () => new Promise((r) => setTimeout(r, 40));
@@ -73,5 +73,20 @@ describe('enrichment is bound to the account that saw the message', () => {
     // No binding is readable through the mocked bridge, so this resolves null regardless;
     // the pure selection rule is covered in return-bindings.test.ts via answersYourAsk.
     expect(await answeredBanner('ada', 'linus', tail, trig)).toBeNull();
+  });
+});
+
+describe('pickTriggering', () => {
+  const tail = [
+    { id: 'm1', from: 'linus', content: 'OK', replyTo: undefined },
+    { id: 'm2', from: 'linus', content: 'OK', replyTo: { id: 'msg_q', from: 'ada', text: 'q' } },
+  ];
+  it('selects exactly the served id — identical text on a later linked message does not qualify', () => {
+    expect(pickTriggering(tail, 'linus', { id: 'm1', from: 'linus', body: 'OK' })?.id).toBe('m1');
+    expect(pickTriggering(tail, 'linus', { id: 'm2', from: 'linus', body: 'OK' })?.id).toBe('m2');
+  });
+  it('without a served id nothing is picked (ordinary banner), never a text match', () => {
+    expect(pickTriggering(tail, 'linus', { from: 'linus', body: 'OK' })).toBeNull();
+    expect(pickTriggering(tail, 'linus', undefined)).toBeNull();
   });
 });

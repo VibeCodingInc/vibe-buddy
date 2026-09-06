@@ -105,21 +105,29 @@ export async function answeredBanner(
   them: string,
   loadTail: (handle: string) => Promise<Pick<VibeMessage, 'from' | 'content' | 'replyTo'>[]>,
   /** The message that raised the banner: only ITS linkage may describe it (codex P2). */
-  trigger?: { from: string; body: string },
+  trigger?: { id?: string; from: string; body: string },
 ): Promise<{ title: string; body: string } | null> {
   const list = await loadReturnBindings(me, true);
   const b = bindingFor(them, list);
   if (!b || !b.messageId) return null;
-  let tail: Pick<VibeMessage, 'from' | 'content' | 'replyTo'>[] = [];
+  let tail: Pick<VibeMessage, 'id' | 'from' | 'content' | 'replyTo'>[] = [];
   try { tail = await loadTail(them); } catch { return null; }
-  const theirs = tail.filter((m) => m.from === them);
-  // Find the triggering message itself (newest match on author + text); if a
-  // later message arrived meanwhile it must not speak for this banner.
-  const candidates = trigger ? theirs.filter((m) => String(m.content || '') === trigger.body) : theirs.slice(-1);
-  const hit = candidates[candidates.length - 1];
+  const hit = pickTriggering(tail, them, trigger);
   if (!hit || !answersYourAsk(hit, b, them)) return null;
   const preview = String(hit.content || '').slice(0, 100);
   return { title: `@${them}`, body: `${b.project ? `answered what you asked from ${b.project}` : 'answered what you asked'}: ${preview}` };
+}
+
+/**
+ * The message a banner is about. With a served id, only that exact message
+ * qualifies — text is not identity (two "OK"s are two messages). Without an
+ * id (older servers) nothing is picked: better an ordinary banner than a
+ * later message speaking for an earlier one.
+ */
+export function pickTriggering<M extends Pick<VibeMessage, 'id' | 'from'>>(tail: M[], them: string, trigger?: { id?: string; from: string; body: string }): M | null {
+  if (!trigger || !trigger.id) return null;
+  const hit = tail.find((m) => m.from === them && m.id === trigger.id);
+  return hit ?? null;
 }
 
 export async function revealFolder(cwd: string): Promise<{ ok: boolean; error?: string }> {
