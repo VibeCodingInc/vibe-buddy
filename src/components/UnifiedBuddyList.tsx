@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { buddyClient, type VibeUser, type VibeThread, type SessionEntity, type MySession, type RecentTrace } from '../lib/vibeClient';
+import { answeredBanner } from '../lib/returnBindings';
+import { getNotificationOwner } from '../lib/notifications';
 import { ensureNotificationPermissionResult, hasNotificationPermission, checkAndNotify, notifyArrivals, initNotificationClicks } from '../lib/notifications';
 import { vibeconfAvailability, vibeconfSeatState, startCall, joinLine, sessionContext } from '../lib/vibeconf';
 import { rememberCall } from '../lib/callMemory';
@@ -336,7 +338,9 @@ export default function UnifiedBuddyList({
   // belong in their own effect, where deleting something else cannot take
   // them along.
   useEffect(() => {
-    checkAndNotify(threads);
+    // A new message that answers what you asked from a piece of work says so
+    // in the banner — only on served reply linkage, never inferred.
+    checkAndNotify(threads, (w, trigger) => answeredBanner(handle, w, async (h) => (await buddyClient.getThreadResult(h)).messages, trigger, () => getNotificationOwner() === handle));
     // The buddy list's oldest trick, and the one Buddy never did: tell you
     // when someone you know shows up. Presence was only ever visible to a
     // user already looking at a window that lives hidden in the menu bar.

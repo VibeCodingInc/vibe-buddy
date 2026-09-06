@@ -126,6 +126,9 @@ let nativeProbe: Promise<boolean> | null = null;
  */
 let bannerOwner: string | null = null;
 
+/** The account banners are currently stamped for (null when signed out). */
+export function getNotificationOwner(): string | null { return bannerOwner; }
+
 export function setNotificationOwner(handle: string | null): void {
   const changed = handle !== bannerOwner;
   bannerOwner = handle;
@@ -234,12 +237,23 @@ interface ThreadInfo {
   with: string;
   unread: number;
   lastMessage?: {
+    /** Served id of the newest message; enrichment is keyed to it, never to text. */
+    id?: string;
     from: string;
     body: string;
   };
 }
 
-export function checkAndNotify(threads: ThreadInfo[]): void {
+export function checkAndNotify(
+  threads: ThreadInfo[],
+  /**
+   * Optional: say what a new message IS before the banner fires — e.g. their
+   * verified answer to what you asked from a piece of work. Resolves to a
+   * replacement title/body, or null for the ordinary banner. A rejection is
+   * the ordinary banner too; a banner is never lost to enrichment.
+   */
+  describe?: (thread: string, trigger: { id?: string; from: string; body: string }) => Promise<{ title: string; body: string } | null>,
+): void {
   // Update dock badge regardless of notification permission
   const totalUnread = threads.reduce((sum, t) => sum + t.unread, 0);
   updateDockBadge(totalUnread);
@@ -268,16 +282,31 @@ export function checkAndNotify(threads: ThreadInfo[]): void {
       // New message! Send notification — extra carries the thread so a click
       // can focus Buddy and open the right DM (see initNotificationClicks).
       const preview = t.lastMessage.body.slice(0, 120);
-      deliver({
+      const banner = {
         title: `@${t.lastMessage.from}`,
         body: preview,
-        kind: 'dm',
+        kind: 'dm' as const,
         thread: t.with,
         from: t.lastMessage.from,
         // The reply field. Arrival banners deliberately omit it — there is
         // nothing to reply to when someone merely comes online.
         reply: true,
-      });
+      };
+      if (describe) {
+        // The enrichment is bound to the account that saw the message: if the
+        // owner changes while it is pending (sign-out, switch), NOTHING is
+        // delivered — not the enriched banner, not the fallback — because a
+        // banner stamped with the next account would expose the first one's
+        // message and let a reply pass as the wrong identity (codex P1).
+        const owner = bannerOwner;
+        const w = t.with;
+        const trigger = { id: t.lastMessage.id, from: t.lastMessage.from, body: t.lastMessage.body };
+        void describe(w, trigger)
+          .then((d) => { if (bannerOwner !== owner) return; deliver(d ? { ...banner, title: d.title, body: d.body } : banner); })
+          .catch(() => { if (bannerOwner !== owner) return; deliver(banner); });
+      } else {
+        deliver(banner);
+      }
     }
     lastUnreadCounts[t.with] = t.unread;
   });

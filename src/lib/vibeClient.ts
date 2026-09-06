@@ -210,6 +210,20 @@ export interface VibeMessage {
    * relative age).
    */
   replyTo?: { id: string; from: string | null; text: string | null };
+  /**
+   * SERVER-AUTHORITATIVE authorship of the message (platform#292 deriveActor):
+   * who wrote it, and — for a delegated send — whose grant it was sent under
+   * ("acting for"). Never inferred from the handle. Absent on older servers.
+   * "Operated by" (who owns an agent) is a DIFFERENT fact from the identity
+   * endpoint and is never derived from this.
+   */
+  actor?: {
+    kind: 'human' | 'agent' | 'automated';
+    /** The operator PRINCIPAL id (durable fact) for a delegated send; null otherwise. */
+    operator: string | null;
+    /** The operator's current primary handle at read time (a label; platform#413). null when there is no operator. */
+    operatorHandle: string | null;
+  };
 }
 
 export interface VibeThread {
@@ -220,6 +234,8 @@ export interface VibeThread {
   /** Served message count — addresses the newest page of a long thread (buddy#17). */
   messageCount?: number;
   lastMessage?: {
+    /** Served id of the newest message — the only thing that identifies it (never its text). */
+    id?: string;
     from: string;
     body: string;
     created_at: string;
@@ -1186,6 +1202,7 @@ class BuddyClient {
         messageCount: Number.isFinite(t.message_count) ? t.message_count : undefined,
         lastMessage: t.last_message
           ? {
+              id: typeof t.last_message.id === 'string' ? t.last_message.id : undefined,
               from: t.last_message.from,
               body: t.last_message.body,
               created_at: t.last_message.created_at,
@@ -1541,6 +1558,15 @@ class BuddyClient {
                 id: m.reply_to.id,
                 from: typeof m.reply_to.from === 'string' ? m.reply_to.from : null,
                 text: typeof m.reply_to.text === 'string' ? m.reply_to.text : null,
+              }
+            : undefined,
+        // Served actor only; the exact enum, nothing coerced.
+        actor:
+          m.actor && typeof m.actor === 'object' && ['human', 'agent', 'automated'].includes(m.actor.kind)
+            ? {
+                kind: m.actor.kind,
+                operator: typeof m.actor.operator === 'string' && m.actor.operator ? m.actor.operator : null,
+                operatorHandle: typeof m.actor.operator_handle === 'string' && m.actor.operator_handle ? m.actor.operator_handle : null,
               }
             : undefined,
       }));

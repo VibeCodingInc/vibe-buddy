@@ -7,6 +7,8 @@ import { realtime } from '../lib/realtime';
 import { color, space, radius, size } from '../lib/tokens';
 import { vibeconfAvailability, startCall, joinLine, sessionContext } from '../lib/vibeconf';
 import { rememberCall } from '../lib/callMemory';
+import { loadReturnBindings, bindingFor, answersYourAsk, answersLine, returnAction, revealFolder, sameBinding, type ReturnBinding, type ReturnAction } from '../lib/returnBindings';
+import { terminalSessions, frontSession } from '../lib/terminal';
 import { isFreshLastSeen } from '../lib/freshness';
 import { hasNoReadEvidence, isTestAccount } from './list/shared';
 
@@ -402,6 +404,68 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // needle has keyboard focus (explicit ring in the dark UI).
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [needleFocusedId, setNeedleFocusedId] = useState<string | null>(null);
+  // What a reply answers, and one honest way back to the work (the terminal
+  // package's private binding for this person). Claimed only on served
+  // reply linkage; the action says exactly what it does.
+  const [binding, setBinding] = useState<ReturnBinding | null>(null);
+  const [back, setBack] = useState<ReturnAction>({ kind: 'none' });
+  const [backError, setBackError] = useState<string | null>(null);
+  // An error belongs to the binding that failed; a new binding starts clean.
+  useEffect(() => { setBackError(null); }, [binding?.messageId, binding?.cwd]);
+  // Re-read on every change in the thread: the terminal may write a binding
+  // after this conversation opened (codex P2).
+  useEffect(() => {
+    let alive = true;
+    const read = () => loadReturnBindings(handle, true)
+      .then((list) => { if (!alive) return; const next = bindingFor(chatWith, list); setBinding((prev) => (sameBinding(prev, next) ? prev : next)); })
+      .catch(() => {});
+    void read();
+    // Bounded refresh while the conversation is open: the terminal may write
+    // the binding AFTER Buddy already loaded the reply (codex P2), and no
+    // message-change signal would follow.
+    const timer = setInterval(() => { void read(); }, 15_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [handle, chatWith, messages.length > 0 ? messages[messages.length - 1].id : '']);
+  const hasVerifiedAnswer = Boolean(binding && messages.some((mm) => answersYourAsk(mm, binding, chatWith)));
+  useEffect(() => {
+    if (!binding || !hasVerifiedAnswer) { setBack({ kind: 'none' }); return; }
+    let alive = true;
+    terminalSessions().then(({ sessions, warnings }) => { if (alive) setBack(returnAction(binding, sessions, !warnings || warnings.length === 0)); }).catch(() => { if (alive) setBack(returnAction(binding, [])); });
+    return () => { alive = false; };
+  }, [binding, hasVerifiedAnswer]);
+  // A late completion from an earlier click must not write onto a newer
+  // binding's action (codex P2): every write checks the binding it started for.
+  const bindingRef = useRef<ReturnBinding | null>(null);
+  bindingRef.current = binding;
+  const goBack = async () => {
+    if (!binding) return;
+    const started = binding;
+    const still = () => sameBinding(bindingRef.current, started);
+    setBackError(null);
+    // Decide at click time, from a fresh scan: the tab we saw earlier may now
+    // hold another project's session, and a tty check alone would front it
+    // (codex P2). Only an exact directory match fronts a tab.
+    let now: ReturnAction;
+    try { const scan = await terminalSessions(); now = returnAction(started, scan.sessions, !scan.warnings || scan.warnings.length === 0); } catch { now = returnAction(started, []); }
+    if (!still()) return;
+    setBack(now);
+    if (now.kind === 'session') {
+      const r = await frontSession(now.tty, now.app);
+      if (r.ok || !still()) return;
+      // The tab went away between scan and front: fall back honestly.
+      if (started.cwd) {
+        const folder: ReturnAction = { kind: 'folder', label: 'Show the folder', cwd: started.cwd };
+        setBack(folder);
+        const f = await revealFolder(started.cwd);
+        if (!f.ok && still()) setBackError(f.error || "couldn't show the folder");
+      }
+      return;
+    }
+    if (now.kind === 'folder') {
+      const f = await revealFolder(now.cwd);
+      if (!f.ok && still()) setBackError(f.error || "couldn't show the folder");
+    }
+  };
 
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Move to + highlight the parent a needle points at, then clear the
@@ -898,6 +962,27 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                      never promise to open something we can't reach.
                   QUOTES the sanitized parent verbatim, never classifies it.
                   Absent replyTo → ordinary message, no chrome. */}
+              {/* Their verified answer to what you asked from a piece of work:
+                  one line naming the work, one action back to it. Served
+                  reply linkage only — never "answered" for a message that
+                  merely arrived after yours. No ids on screen. */}
+              {binding && answersYourAsk(msg, binding, chatWith) && (
+                <div data-testid="answers-line" style={{ fontSize: '11px', color: color.dim, marginBottom: '2px', display: 'flex', gap: '8px', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                  <span>↩ {answersLine(binding)}</span>
+                  {back.kind !== 'none' && !backError && (
+                    <button
+                      type="button"
+                      onClick={() => { void goBack(); }}
+                      style={{ background: 'transparent', border: `1px solid ${color.faint}`, color: color.dim, fontSize: '10px', padding: '1px 6px', borderRadius: '3px', cursor: 'pointer' }}
+                    >
+                      {back.label}
+                    </button>
+                  )}
+                  {backError && (
+                    <span data-testid="back-error" style={{ color: color.faint }}>{backError}</span>
+                  )}
+                </div>
+              )}
               {msg.replyTo && msg.replyTo.text === null && (
                 <div style={{ fontSize: '11px', color: color.faint, marginBottom: '2px' }}>
                   ↳ replying to an unavailable message
@@ -960,6 +1045,21 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               {msg.kind === 'announcement' && (
                 <div style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
                   automated announcement · from /vibe
+                </div>
+              )}
+              {/* Truthful attribution from the SERVED actor: a delegated send
+                  says whose grant it was sent under. "Operated by" is a
+                  different fact (the identity endpoint) and is not this. */}
+              {!isMe && msg.actor && msg.actor.kind === 'agent' && msg.actor.operator && (
+                <div data-testid="acting-for" style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
+                  {/* `operator` is the durable PRINCIPAL; `operator_handle`
+                      (platform#413) is that principal's current label. The
+                      label is shown only beside a non-null principal, and
+                      without it we say the fact we have — never a name we
+                      inferred. An exercised grant is not "approved by". */}
+                  {msg.actor.operatorHandle
+                    ? `acting for @${msg.actor.operatorHandle}`
+                    : "acting under a person's grant"}
                 </div>
               )}
               <div
