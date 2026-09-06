@@ -126,6 +126,9 @@ let nativeProbe: Promise<boolean> | null = null;
  */
 let bannerOwner: string | null = null;
 
+/** The account banners are currently stamped for (null when signed out). */
+export function getNotificationOwner(): string | null { return bannerOwner; }
+
 export function setNotificationOwner(handle: string | null): void {
   const changed = handle !== bannerOwner;
   bannerOwner = handle;

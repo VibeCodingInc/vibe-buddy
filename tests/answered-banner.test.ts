@@ -90,3 +90,13 @@ describe('pickTriggering', () => {
     expect(pickTriggering(tail, 'linus', undefined)).toBeNull();
   });
 });
+
+describe('the thread fetch never runs for another account', () => {
+  it('stillMe() is consulted before loadTail; a changed account skips the fetch', async () => {
+    let fetched = 0;
+    const tail = async () => { fetched++; return [] as never[]; };
+    const r = await answeredBanner('ada', 'linus', tail, { id: 'm1', from: 'linus', body: 'x' }, () => false);
+    expect(r).toBeNull();
+    expect(fetched).toBe(0);
+  });
+});

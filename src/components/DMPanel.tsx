@@ -426,30 +426,37 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     terminalSessions().then(({ sessions }) => { if (alive) setBack(returnAction(binding, sessions)); }).catch(() => { if (alive) setBack(returnAction(binding, [])); });
     return () => { alive = false; };
   }, [binding, hasVerifiedAnswer]);
+  // A late completion from an earlier click must not write onto a newer
+  // binding's action (codex P2): every write checks the binding it started for.
+  const bindingRef = useRef<ReturnBinding | null>(null);
+  bindingRef.current = binding;
   const goBack = async () => {
     if (!binding) return;
+    const started = binding;
+    const still = () => bindingRef.current === started;
     setBackError(null);
     // Decide at click time, from a fresh scan: the tab we saw earlier may now
     // hold another project's session, and a tty check alone would front it
     // (codex P2). Only an exact directory match fronts a tab.
     let now: ReturnAction;
-    try { now = returnAction(binding, (await terminalSessions()).sessions); } catch { now = returnAction(binding, []); }
+    try { now = returnAction(started, (await terminalSessions()).sessions); } catch { now = returnAction(started, []); }
+    if (!still()) return;
     setBack(now);
     if (now.kind === 'session') {
       const r = await frontSession(now.tty, now.app);
-      if (r.ok) return;
+      if (r.ok || !still()) return;
       // The tab went away between scan and front: fall back honestly.
-      if (binding.cwd) {
-        const folder: ReturnAction = { kind: 'folder', label: 'Show the folder', cwd: binding.cwd };
+      if (started.cwd) {
+        const folder: ReturnAction = { kind: 'folder', label: 'Show the folder', cwd: started.cwd };
         setBack(folder);
-        const f = await revealFolder(binding.cwd);
-        if (!f.ok) setBackError(f.error || "couldn't show the folder");
+        const f = await revealFolder(started.cwd);
+        if (!f.ok && still()) setBackError(f.error || "couldn't show the folder");
       }
       return;
     }
     if (now.kind === 'folder') {
       const f = await revealFolder(now.cwd);
-      if (!f.ok) setBackError(f.error || "couldn't show the folder");
+      if (!f.ok && still()) setBackError(f.error || "couldn't show the folder");
     }
   };
 

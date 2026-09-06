@@ -103,13 +103,22 @@ export function returnAction(binding: ReturnBinding | null, sessions: TerminalSe
 export async function answeredBanner(
   me: string,
   them: string,
-  loadTail: (handle: string) => Promise<Pick<VibeMessage, 'from' | 'content' | 'replyTo'>[]>,
+  loadTail: (handle: string) => Promise<Pick<VibeMessage, 'id' | 'from' | 'content' | 'replyTo'>[]>,
   /** The message that raised the banner: only ITS linkage may describe it (codex P2). */
   trigger?: { id?: string; from: string; body: string },
+  /**
+   * Is the account that saw the message still the signed-in one? Checked
+   * again right before the thread fetch: that fetch runs as whoever is
+   * signed in NOW and can create a thread, so it must never run for a
+   * message another account saw (codex P2).
+   */
+  stillMe: () => boolean = () => true,
 ): Promise<{ title: string; body: string } | null> {
+  if (!trigger || !trigger.id) return null;
   const list = await loadReturnBindings(me, true);
   const b = bindingFor(them, list);
   if (!b || !b.messageId) return null;
+  if (!stillMe()) return null;
   let tail: Pick<VibeMessage, 'id' | 'from' | 'content' | 'replyTo'>[] = [];
   try { tail = await loadTail(them); } catch { return null; }
   const hit = pickTriggering(tail, them, trigger);
