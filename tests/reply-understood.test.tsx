@@ -21,11 +21,12 @@ let bindings: unknown[] = [];
 let sessions: unknown[] = [];
 let frontOk = true;
 let revealError: string | null = null;
+let scanWarnings: string[] = [];
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => {
     invoked.push({ cmd, args });
     if (cmd === 'read_return_bindings') return bindings;
-    if (cmd === 'terminal_sessions') return { sessions, warnings: [] };
+    if (cmd === 'terminal_sessions') return { sessions, warnings: scanWarnings };
     if (cmd === 'front_terminal_session') { if (!frontOk) throw new Error('that tab is gone'); return null; }
     if (cmd === 'reveal_in_finder') { if (revealError) throw new Error(revealError); return null; }
     return null;
@@ -47,7 +48,7 @@ const tab = (over: Record<string, unknown> = {}) => ({ window_id: '1', tty: '/de
 const theBinding = { handle: THEM, from: ME, project: 'payments', messageId: 'msg_q', firstLine: asked.content, cwd: CWD, sentAt: 1 };
 
 beforeEach(() => {
-  invoked.length = 0; bindings = []; sessions = []; frontOk = true; revealError = null; memStore.clear(); resetReturnBindings();
+  invoked.length = 0; bindings = []; sessions = []; frontOk = true; revealError = null; scanWarnings = []; memStore.clear(); resetReturnBindings();
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
   vi.spyOn(realtime, 'goBackground').mockImplementation(() => {});
@@ -182,5 +183,14 @@ describe('codex round 2', () => {
     await act(async () => { incoming!([asked, answer(), { ...answer({ id: 'msg_a2' }), replyTo: { id: 'msg_q2', from: ME, text: 'q2' } }]); await new Promise((r) => setTimeout(r, 30)); });
     expect(screen.queryByTestId('back-error')).toBeNull();
     expect(await screen.findByRole('button', { name: 'Show the folder' })).toBeTruthy();
+  });
+});
+
+describe('codex round 4', () => {
+  it('a scan with warnings (a terminal denied or timed out) offers the folder, not a tab that may be the wrong one', async () => {
+    bindings = [theBinding]; sessions = [tab()]; scanWarnings = ['Terminal.app: Automation denied'];
+    await mount([asked, answer()]);
+    expect(await screen.findByRole('button', { name: 'Show the folder' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Back to the session' })).toBeNull();
   });
 });

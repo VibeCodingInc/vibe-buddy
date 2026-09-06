@@ -7,7 +7,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => { invokeCalls.push({ cmd, args }); if (invokeResult instanceof Error) throw invokeResult; return invokeResult; },
 }));
 
-import { loadReturnBindings, resetReturnBindings, bindingFor, answersYourAsk, answersLine, returnAction, type ReturnBinding } from '../src/lib/returnBindings';
+import { loadReturnBindings, resetReturnBindings, bindingFor, answersYourAsk, answersLine, returnAction, sameBinding, type ReturnBinding } from '../src/lib/returnBindings';
 import type { TerminalSession } from '../src/lib/terminal';
 
 const binding: ReturnBinding = { handle: 'linus', from: 'ada', project: 'payments', messageId: 'msg_q', firstLine: 're: payments — which curve?', cwd: '/Users/ada/Projects/payments', sentAt: 1 };
@@ -61,5 +61,21 @@ describe('the way back is honest', () => {
   it('bindingFor is case- and @-insensitive', () => {
     expect(bindingFor('@Linus', [binding])).toBe(binding);
     expect(bindingFor('grace', [binding])).toBeNull();
+  });
+});
+
+describe('codex round 4', () => {
+  it('an incomplete terminal scan cannot establish uniqueness — the folder is the honest action', () => {
+    expect(returnAction(binding, [tab({})], false)).toMatchObject({ kind: 'folder' });
+    expect(returnAction(binding, [tab({})], true)).toMatchObject({ kind: 'session' });
+  });
+});
+
+describe('binding identity', () => {
+  it('is what it points at, not the object', () => {
+    expect(sameBinding(binding, { ...binding })).toBe(true);
+    expect(sameBinding(binding, { ...binding, messageId: 'other' })).toBe(false);
+    expect(sameBinding(null, null)).toBe(true);
+    expect(sameBinding(binding, null)).toBe(false);
   });
 });

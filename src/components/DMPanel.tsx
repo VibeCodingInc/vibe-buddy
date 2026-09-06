@@ -7,7 +7,7 @@ import { realtime } from '../lib/realtime';
 import { color, space, radius, size } from '../lib/tokens';
 import { vibeconfAvailability, startCall, joinLine, sessionContext } from '../lib/vibeconf';
 import { rememberCall } from '../lib/callMemory';
-import { loadReturnBindings, bindingFor, answersYourAsk, answersLine, returnAction, revealFolder, type ReturnBinding, type ReturnAction } from '../lib/returnBindings';
+import { loadReturnBindings, bindingFor, answersYourAsk, answersLine, returnAction, revealFolder, sameBinding, type ReturnBinding, type ReturnAction } from '../lib/returnBindings';
 import { terminalSessions, frontSession } from '../lib/terminal';
 import { isFreshLastSeen } from '../lib/freshness';
 import { hasNoReadEvidence, isTestAccount } from './list/shared';
@@ -416,14 +416,21 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // after this conversation opened (codex P2).
   useEffect(() => {
     let alive = true;
-    loadReturnBindings(handle, true).then((list) => { if (alive) setBinding(bindingFor(chatWith, list)); }).catch(() => {});
-    return () => { alive = false; };
+    const read = () => loadReturnBindings(handle, true)
+      .then((list) => { if (!alive) return; const next = bindingFor(chatWith, list); setBinding((prev) => (sameBinding(prev, next) ? prev : next)); })
+      .catch(() => {});
+    void read();
+    // Bounded refresh while the conversation is open: the terminal may write
+    // the binding AFTER Buddy already loaded the reply (codex P2), and no
+    // message-change signal would follow.
+    const timer = setInterval(() => { void read(); }, 15_000);
+    return () => { alive = false; clearInterval(timer); };
   }, [handle, chatWith, messages.length > 0 ? messages[messages.length - 1].id : '']);
   const hasVerifiedAnswer = Boolean(binding && messages.some((mm) => answersYourAsk(mm, binding, chatWith)));
   useEffect(() => {
     if (!binding || !hasVerifiedAnswer) { setBack({ kind: 'none' }); return; }
     let alive = true;
-    terminalSessions().then(({ sessions }) => { if (alive) setBack(returnAction(binding, sessions)); }).catch(() => { if (alive) setBack(returnAction(binding, [])); });
+    terminalSessions().then(({ sessions, warnings }) => { if (alive) setBack(returnAction(binding, sessions, !warnings || warnings.length === 0)); }).catch(() => { if (alive) setBack(returnAction(binding, [])); });
     return () => { alive = false; };
   }, [binding, hasVerifiedAnswer]);
   // A late completion from an earlier click must not write onto a newer
@@ -433,13 +440,13 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const goBack = async () => {
     if (!binding) return;
     const started = binding;
-    const still = () => bindingRef.current === started;
+    const still = () => sameBinding(bindingRef.current, started);
     setBackError(null);
     // Decide at click time, from a fresh scan: the tab we saw earlier may now
     // hold another project's session, and a tty check alone would front it
     // (codex P2). Only an exact directory match fronts a tab.
     let now: ReturnAction;
-    try { now = returnAction(started, (await terminalSessions()).sessions); } catch { now = returnAction(started, []); }
+    try { const scan = await terminalSessions(); now = returnAction(started, scan.sessions, !scan.warnings || scan.warnings.length === 0); } catch { now = returnAction(started, []); }
     if (!still()) return;
     setBack(now);
     if (now.kind === 'session') {

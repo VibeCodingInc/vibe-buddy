@@ -57,6 +57,12 @@ export async function loadReturnBindings(me: string, force = false): Promise<Ret
 
 export function resetReturnBindings(): void { cache = null; }
 
+/** Same binding, whatever the object: identity is what it points at. */
+export function sameBinding(a: ReturnBinding | null, b: ReturnBinding | null): boolean {
+  if (!a || !b) return a === b;
+  return a.handle === b.handle && a.messageId === b.messageId && a.cwd === b.cwd && a.project === b.project;
+}
+
 export function bindingFor(handle: string, list: ReturnBinding[]): ReturnBinding | null {
   const h = String(handle || '').replace(/^@/, '').toLowerCase();
   return list.find((b) => b.handle === h) ?? null;
@@ -87,8 +93,12 @@ export type ReturnAction =
  * fronted; two tabs there is a true ambiguity we do not resolve by guessing
  * (fall back to the folder); no tab → the folder, if we know it.
  */
-export function returnAction(binding: ReturnBinding | null, sessions: TerminalSession[]): ReturnAction {
+export function returnAction(binding: ReturnBinding | null, sessions: TerminalSession[], scanComplete = true): ReturnAction {
   if (!binding || !binding.cwd) return { kind: 'none' };
+  // An incomplete scan (a terminal that denied Automation or timed out) means
+  // uniqueness cannot be established: the tab we see may not be the one the
+  // question was asked from. Only the folder is an honest answer then.
+  if (!scanComplete) return { kind: 'folder', label: 'Show the folder', cwd: binding.cwd };
   const m = matchSessionRow(binding.cwd, sessions);
   if (m.kind === 'one') return { kind: 'session', label: 'Back to the session', tty: m.session.tty, app: m.session.app };
   return { kind: 'folder', label: 'Show the folder', cwd: binding.cwd };
