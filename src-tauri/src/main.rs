@@ -12,6 +12,7 @@ mod terminal;
 mod transcript;
 mod notify;
 mod mind;
+mod work;
 
 use auth::{AuthResult, AuthStatus};
 use context_extractor::CodingDNA;
@@ -608,6 +609,8 @@ fn main() {
             terminal::terminal_sessions,
             terminal::front_terminal_session,
             terminal::place_in_terminal_session,
+            work::read_return_bindings,
+            work::reveal_in_finder,
             transcript::transcript_signal,
             mind::mind_prime,
             mind::mind_facet,

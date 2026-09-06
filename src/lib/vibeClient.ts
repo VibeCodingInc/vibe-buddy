@@ -210,6 +210,14 @@ export interface VibeMessage {
    * relative age).
    */
   replyTo?: { id: string; from: string | null; text: string | null };
+  /**
+   * SERVER-AUTHORITATIVE authorship of the message (platform#292 deriveActor):
+   * who wrote it, and — for a delegated send — whose grant it was sent under
+   * ("acting for"). Never inferred from the handle. Absent on older servers.
+   * "Operated by" (who owns an agent) is a DIFFERENT fact from the identity
+   * endpoint and is never derived from this.
+   */
+  actor?: { kind: 'human' | 'agent' | 'automated'; operator: string | null };
 }
 
 export interface VibeThread {
@@ -1542,6 +1550,11 @@ class BuddyClient {
                 from: typeof m.reply_to.from === 'string' ? m.reply_to.from : null,
                 text: typeof m.reply_to.text === 'string' ? m.reply_to.text : null,
               }
+            : undefined,
+        // Served actor only; the exact enum, nothing coerced.
+        actor:
+          m.actor && typeof m.actor === 'object' && ['human', 'agent', 'automated'].includes(m.actor.kind)
+            ? { kind: m.actor.kind, operator: typeof m.actor.operator === 'string' && m.actor.operator ? m.actor.operator : null }
             : undefined,
       }));
       return { messages, error: false };

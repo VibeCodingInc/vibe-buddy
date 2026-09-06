@@ -7,6 +7,8 @@ import { realtime } from '../lib/realtime';
 import { color, space, radius, size } from '../lib/tokens';
 import { vibeconfAvailability, startCall, joinLine, sessionContext } from '../lib/vibeconf';
 import { rememberCall } from '../lib/callMemory';
+import { loadReturnBindings, bindingFor, answersYourAsk, answersLine, returnAction, revealFolder, type ReturnBinding, type ReturnAction } from '../lib/returnBindings';
+import { terminalSessions, frontSession } from '../lib/terminal';
 import { isFreshLastSeen } from '../lib/freshness';
 import { hasNoReadEvidence, isTestAccount } from './list/shared';
 
@@ -402,6 +404,33 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // needle has keyboard focus (explicit ring in the dark UI).
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [needleFocusedId, setNeedleFocusedId] = useState<string | null>(null);
+  // What a reply answers, and one honest way back to the work (the terminal
+  // package's private binding for this person). Claimed only on served
+  // reply linkage; the action says exactly what it does.
+  const [binding, setBinding] = useState<ReturnBinding | null>(null);
+  const [back, setBack] = useState<ReturnAction>({ kind: 'none' });
+  useEffect(() => {
+    let alive = true;
+    loadReturnBindings(handle).then((list) => { if (alive) setBinding(bindingFor(chatWith, list)); }).catch(() => {});
+    return () => { alive = false; };
+  }, [handle, chatWith]);
+  const hasVerifiedAnswer = Boolean(binding && messages.some((mm) => answersYourAsk(mm, binding, chatWith)));
+  useEffect(() => {
+    if (!binding || !hasVerifiedAnswer) { setBack({ kind: 'none' }); return; }
+    let alive = true;
+    terminalSessions().then(({ sessions }) => { if (alive) setBack(returnAction(binding, sessions)); }).catch(() => { if (alive) setBack(returnAction(binding, [])); });
+    return () => { alive = false; };
+  }, [binding, hasVerifiedAnswer]);
+  const goBack = async () => {
+    if (back.kind === 'session') {
+      const r = await frontSession(back.tty, back.app);
+      if (r.ok) return;
+      // The tab went away since we looked: fall back honestly to the folder.
+      if (binding?.cwd) { setBack({ kind: 'folder', label: 'Show the folder', cwd: binding.cwd }); await revealFolder(binding.cwd); }
+      return;
+    }
+    if (back.kind === 'folder') await revealFolder(back.cwd);
+  };
 
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Move to + highlight the parent a needle points at, then clear the
@@ -898,6 +927,24 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                      never promise to open something we can't reach.
                   QUOTES the sanitized parent verbatim, never classifies it.
                   Absent replyTo → ordinary message, no chrome. */}
+              {/* Their verified answer to what you asked from a piece of work:
+                  one line naming the work, one action back to it. Served
+                  reply linkage only — never "answered" for a message that
+                  merely arrived after yours. No ids on screen. */}
+              {binding && answersYourAsk(msg, binding, chatWith) && (
+                <div data-testid="answers-line" style={{ fontSize: '11px', color: color.dim, marginBottom: '2px', display: 'flex', gap: '8px', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                  <span>↩ {answersLine(binding)}</span>
+                  {back.kind !== 'none' && (
+                    <button
+                      type="button"
+                      onClick={() => { void goBack(); }}
+                      style={{ background: 'transparent', border: `1px solid ${color.faint}`, color: color.dim, fontSize: '10px', padding: '1px 6px', borderRadius: '3px', cursor: 'pointer' }}
+                    >
+                      {back.label}
+                    </button>
+                  )}
+                </div>
+              )}
               {msg.replyTo && msg.replyTo.text === null && (
                 <div style={{ fontSize: '11px', color: color.faint, marginBottom: '2px' }}>
                   ↳ replying to an unavailable message
@@ -960,6 +1007,14 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               {msg.kind === 'announcement' && (
                 <div style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
                   automated announcement · from /vibe
+                </div>
+              )}
+              {/* Truthful attribution from the SERVED actor: a delegated send
+                  says whose grant it was sent under. "Operated by" is a
+                  different fact (the identity endpoint) and is not this. */}
+              {!isMe && msg.actor && msg.actor.kind === 'agent' && msg.actor.operator && (
+                <div data-testid="acting-for" style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
+                  acting for @{msg.actor.operator}
                 </div>
               )}
               <div
