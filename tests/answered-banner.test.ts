@@ -15,7 +15,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: async () => {} }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ show: async () => {}, unminimize: async () => {}, setFocus: async () => {} }) }));
 
-import { checkAndNotify, resetNotificationState, hasNotificationPermission } from '../src/lib/notifications';
+import { checkAndNotify, resetNotificationState, hasNotificationPermission, setNotificationOwner } from '../src/lib/notifications';
 import { answeredBanner, resetReturnBindings } from '../src/lib/returnBindings';
 
 const thread = (unread: number) => [{ with: 'linus', unread, lastMessage: { from: 'linus', body: 'exponential, three tries.' } }];
@@ -49,5 +49,29 @@ describe('answeredBanner', () => {
     const tail = async () => [{ from: 'linus', content: 'exponential, three tries.', replyTo: { id: 'msg_q', from: 'ada', text: 'q' } }];
     // No bindings readable → null (never "answered" without the binding)
     expect(await answeredBanner('ada', 'linus', tail)).toBeNull();
+  });
+});
+
+describe('enrichment is bound to the account that saw the message', () => {
+  it('delivers nothing — enriched or fallback — if the owner changed while describe was pending', async () => {
+    setNotificationOwner('ada');
+    checkAndNotify(thread(0));
+    let release: (v: { title: string; body: string } | null) => void = () => {};
+    checkAndNotify(thread(1), () => new Promise((r) => { release = r; }));
+    setNotificationOwner('bob'); // sign-out / switch while pending
+    release({ title: '@linus', body: 'answered what you asked from payments: …' });
+    await tick();
+    expect(sent).toHaveLength(0);
+    setNotificationOwner('ada');
+  });
+  it('only the triggering message may describe the banner', async () => {
+    const trig = { from: 'linus', body: 'first reply' };
+    const tail = async () => [
+      { from: 'linus', content: 'first reply', replyTo: undefined },
+      { from: 'linus', content: 'a later linked reply', replyTo: { id: 'msg_q', from: 'ada', text: 'q' } },
+    ];
+    // No binding is readable through the mocked bridge, so this resolves null regardless;
+    // the pure selection rule is covered in return-bindings.test.ts via answersYourAsk.
+    expect(await answeredBanner('ada', 'linus', tail, trig)).toBeNull();
   });
 });

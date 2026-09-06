@@ -20,13 +20,14 @@ const invoked: Array<{ cmd: string; args: unknown }> = [];
 let bindings: unknown[] = [];
 let sessions: unknown[] = [];
 let frontOk = true;
+let revealError: string | null = null;
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => {
     invoked.push({ cmd, args });
     if (cmd === 'read_return_bindings') return bindings;
     if (cmd === 'terminal_sessions') return { sessions, warnings: [] };
     if (cmd === 'front_terminal_session') { if (!frontOk) throw new Error('that tab is gone'); return null; }
-    if (cmd === 'reveal_in_finder') return null;
+    if (cmd === 'reveal_in_finder') { if (revealError) throw new Error(revealError); return null; }
     return null;
   },
 }));
@@ -46,7 +47,7 @@ const tab = (over: Record<string, unknown> = {}) => ({ window_id: '1', tty: '/de
 const theBinding = { handle: THEM, from: ME, project: 'payments', messageId: 'msg_q', firstLine: asked.content, cwd: CWD, sentAt: 1 };
 
 beforeEach(() => {
-  invoked.length = 0; bindings = []; sessions = []; frontOk = true; memStore.clear(); resetReturnBindings();
+  invoked.length = 0; bindings = []; sessions = []; frontOk = true; revealError = null; memStore.clear(); resetReturnBindings();
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
   vi.spyOn(realtime, 'goBackground').mockImplementation(() => {});
@@ -127,5 +128,37 @@ describe('truthful attribution', () => {
   it('a human message, or an agent with no operator, gets no label', async () => {
     await mount([asked, answer({ id: 'msg_c', actor: { kind: 'human', operator: null } }), answer({ id: 'msg_d', actor: { kind: 'agent', operator: null } })]);
     expect(screen.queryByTestId('acting-for')).toBeNull();
+  });
+});
+
+describe('codex round 1', () => {
+  it('the return action is decided at click time from a fresh scan — a tab that now holds other work is not fronted', async () => {
+    bindings = [theBinding]; sessions = [tab()];
+    await mount([asked, answer()]);
+    await screen.findByRole('button', { name: 'Back to the session' });
+    sessions = [tab({ cwd: '/Users/ada/Projects/other' })]; // the tab moved on
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the session' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 15)); });
+    expect(invoked.some((c) => c.cmd === 'front_terminal_session')).toBe(false);
+    expect(invoked.some((c) => c.cmd === 'reveal_in_finder')).toBe(true);
+  });
+  it('a folder that cannot be shown says why instead of a dead button', async () => {
+    bindings = [theBinding]; sessions = []; revealError = "that folder isn't there anymore";
+    await mount([asked, answer()]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show the folder' }));
+    expect((await screen.findByTestId('back-error')).textContent).toMatch(/isn't there anymore/);
+    expect(screen.queryByRole('button', { name: 'Show the folder' })).toBeNull();
+  });
+  it('a binding written after the conversation opened is picked up when a reply arrives', async () => {
+    bindings = [];
+    let incoming: ((msgs: VibeMessage[]) => void) | null = null;
+    (realtime.openDM as unknown as { mockImplementation: (f: (t: string, cb: (msgs: VibeMessage[]) => void) => void) => void }).mockImplementation((_t, cb) => { incoming = cb; });
+    setCachedMessages(ME, THEM, [asked]);
+    render(<DMPanel handle={ME} chatWith={THEM} onBack={() => {}} users={[]} hasServerThread />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.queryByTestId('answers-line')).toBeNull();
+    bindings = [theBinding]; // the terminal wrote it after this panel opened
+    await act(async () => { incoming!([asked, answer()]); await new Promise((r) => setTimeout(r, 30)); });
+    expect(await screen.findByTestId('answers-line')).toBeTruthy();
   });
 });

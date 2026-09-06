@@ -104,16 +104,21 @@ export async function answeredBanner(
   me: string,
   them: string,
   loadTail: (handle: string) => Promise<Pick<VibeMessage, 'from' | 'content' | 'replyTo'>[]>,
+  /** The message that raised the banner: only ITS linkage may describe it (codex P2). */
+  trigger?: { from: string; body: string },
 ): Promise<{ title: string; body: string } | null> {
-  const list = await loadReturnBindings(me);
+  const list = await loadReturnBindings(me, true);
   const b = bindingFor(them, list);
   if (!b || !b.messageId) return null;
   let tail: Pick<VibeMessage, 'from' | 'content' | 'replyTo'>[] = [];
   try { tail = await loadTail(them); } catch { return null; }
   const theirs = tail.filter((m) => m.from === them);
-  const newest = theirs[theirs.length - 1];
-  if (!newest || !answersYourAsk(newest, b, them)) return null;
-  const preview = String(newest.content || '').slice(0, 100);
+  // Find the triggering message itself (newest match on author + text); if a
+  // later message arrived meanwhile it must not speak for this banner.
+  const candidates = trigger ? theirs.filter((m) => String(m.content || '') === trigger.body) : theirs.slice(-1);
+  const hit = candidates[candidates.length - 1];
+  if (!hit || !answersYourAsk(hit, b, them)) return null;
+  const preview = String(hit.content || '').slice(0, 100);
   return { title: `@${them}`, body: `${b.project ? `answered what you asked from ${b.project}` : 'answered what you asked'}: ${preview}` };
 }
 

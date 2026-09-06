@@ -339,7 +339,7 @@ export default function UnifiedBuddyList({
   useEffect(() => {
     // A new message that answers what you asked from a piece of work says so
     // in the banner — only on served reply linkage, never inferred.
-    checkAndNotify(threads, (w) => answeredBanner(handle, w, async (h) => (await buddyClient.getThreadResult(h)).messages));
+    checkAndNotify(threads, (w, trigger) => answeredBanner(handle, w, async (h) => (await buddyClient.getThreadResult(h)).messages, trigger));
     // The buddy list's oldest trick, and the one Buddy never did: tell you
     // when someone you know shows up. Presence was only ever visible to a
     // user already looking at a window that lives hidden in the menu bar.

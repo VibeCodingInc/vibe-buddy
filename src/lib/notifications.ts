@@ -247,7 +247,7 @@ export function checkAndNotify(
    * replacement title/body, or null for the ordinary banner. A rejection is
    * the ordinary banner too; a banner is never lost to enrichment.
    */
-  describe?: (thread: string) => Promise<{ title: string; body: string } | null>,
+  describe?: (thread: string, trigger: { from: string; body: string }) => Promise<{ title: string; body: string } | null>,
 ): void {
   // Update dock badge regardless of notification permission
   const totalUnread = threads.reduce((sum, t) => sum + t.unread, 0);
@@ -288,10 +288,17 @@ export function checkAndNotify(
         reply: true,
       };
       if (describe) {
+        // The enrichment is bound to the account that saw the message: if the
+        // owner changes while it is pending (sign-out, switch), NOTHING is
+        // delivered — not the enriched banner, not the fallback — because a
+        // banner stamped with the next account would expose the first one's
+        // message and let a reply pass as the wrong identity (codex P1).
+        const owner = bannerOwner;
         const w = t.with;
-        void describe(w)
-          .then((d) => deliver(d ? { ...banner, title: d.title, body: d.body } : banner))
-          .catch(() => deliver(banner));
+        const trigger = { from: t.lastMessage.from, body: t.lastMessage.body };
+        void describe(w, trigger)
+          .then((d) => { if (bannerOwner !== owner) return; deliver(d ? { ...banner, title: d.title, body: d.body } : banner); })
+          .catch(() => { if (bannerOwner !== owner) return; deliver(banner); });
       } else {
         deliver(banner);
       }

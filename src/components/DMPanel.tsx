@@ -409,11 +409,14 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // reply linkage; the action says exactly what it does.
   const [binding, setBinding] = useState<ReturnBinding | null>(null);
   const [back, setBack] = useState<ReturnAction>({ kind: 'none' });
+  const [backError, setBackError] = useState<string | null>(null);
+  // Re-read on every change in the thread: the terminal may write a binding
+  // after this conversation opened (codex P2).
   useEffect(() => {
     let alive = true;
-    loadReturnBindings(handle).then((list) => { if (alive) setBinding(bindingFor(chatWith, list)); }).catch(() => {});
+    loadReturnBindings(handle, true).then((list) => { if (alive) setBinding(bindingFor(chatWith, list)); }).catch(() => {});
     return () => { alive = false; };
-  }, [handle, chatWith]);
+  }, [handle, chatWith, messages.length]);
   const hasVerifiedAnswer = Boolean(binding && messages.some((mm) => answersYourAsk(mm, binding, chatWith)));
   useEffect(() => {
     if (!binding || !hasVerifiedAnswer) { setBack({ kind: 'none' }); return; }
@@ -422,14 +425,30 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     return () => { alive = false; };
   }, [binding, hasVerifiedAnswer]);
   const goBack = async () => {
-    if (back.kind === 'session') {
-      const r = await frontSession(back.tty, back.app);
+    if (!binding) return;
+    setBackError(null);
+    // Decide at click time, from a fresh scan: the tab we saw earlier may now
+    // hold another project's session, and a tty check alone would front it
+    // (codex P2). Only an exact directory match fronts a tab.
+    let now: ReturnAction;
+    try { now = returnAction(binding, (await terminalSessions()).sessions); } catch { now = returnAction(binding, []); }
+    setBack(now);
+    if (now.kind === 'session') {
+      const r = await frontSession(now.tty, now.app);
       if (r.ok) return;
-      // The tab went away since we looked: fall back honestly to the folder.
-      if (binding?.cwd) { setBack({ kind: 'folder', label: 'Show the folder', cwd: binding.cwd }); await revealFolder(binding.cwd); }
+      // The tab went away between scan and front: fall back honestly.
+      if (binding.cwd) {
+        const folder: ReturnAction = { kind: 'folder', label: 'Show the folder', cwd: binding.cwd };
+        setBack(folder);
+        const f = await revealFolder(binding.cwd);
+        if (!f.ok) setBackError(f.error || "couldn't show the folder");
+      }
       return;
     }
-    if (back.kind === 'folder') await revealFolder(back.cwd);
+    if (now.kind === 'folder') {
+      const f = await revealFolder(now.cwd);
+      if (!f.ok) setBackError(f.error || "couldn't show the folder");
+    }
   };
 
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -934,7 +953,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               {binding && answersYourAsk(msg, binding, chatWith) && (
                 <div data-testid="answers-line" style={{ fontSize: '11px', color: color.dim, marginBottom: '2px', display: 'flex', gap: '8px', alignItems: 'baseline', flexWrap: 'wrap' }}>
                   <span>↩ {answersLine(binding)}</span>
-                  {back.kind !== 'none' && (
+                  {back.kind !== 'none' && !backError && (
                     <button
                       type="button"
                       onClick={() => { void goBack(); }}
@@ -942,6 +961,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                     >
                       {back.label}
                     </button>
+                  )}
+                  {backError && (
+                    <span data-testid="back-error" style={{ color: color.faint }}>{backError}</span>
                   )}
                 </div>
               )}
