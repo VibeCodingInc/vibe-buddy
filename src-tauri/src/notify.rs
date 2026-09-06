@@ -228,6 +228,7 @@ mod macos {
     pub fn clear_delivered(app: AppHandle) -> Result<(), String> {
         app.run_on_main_thread(|| unsafe {
             let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
+            if center == nil { return; }
             let _: () = msg_send![center, removeAllDeliveredNotifications];
         })
         .map_err(|e| format!("main-thread dispatch failed: {e}"))
@@ -375,6 +376,7 @@ mod macos {
             // The banner was acted on; leaving it in Notification Center
             // invites a second click that would re-fire the action.
             let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
+            if center == nil { return; }
             let _: () = msg_send![center, removeDeliveredNotification: notification];
         }
     }
@@ -432,6 +434,7 @@ mod macos {
         unsafe {
             let delegate: id = msg_send![delegate_class(), new];
             let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
+            if center == nil { return; }
             let _: () = msg_send![center, setDelegate: delegate];
 
             let name = NSString::alloc(nil).init_str("NSApplicationDidFinishLaunchingNotification");
@@ -504,6 +507,7 @@ mod macos {
             let _: () = msg_send![info, release];
 
             let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
+            if center == nil { return; }
             // deliverNotification COPIES the notification (documented), so
             // releasing ours immediately after is correct, not risky.
             let _: () = msg_send![center, deliverNotification: notif];
