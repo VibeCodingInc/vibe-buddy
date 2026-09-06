@@ -1052,12 +1052,13 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                   different fact (the identity endpoint) and is not this. */}
               {!isMe && msg.actor && msg.actor.kind === 'agent' && msg.actor.operator && (
                 <div data-testid="acting-for" style={{ fontSize: '9px', color: color.faint, marginBottom: '2px', letterSpacing: '0.4px', textTransform: 'uppercase' }}>
-                  {/* The served operator is a PRINCIPAL id, not a handle
-                      (message-service deriveActor). Without a served
-                      handle we say the fact we have — sent under a
-                      person's grant — and never invent a name. */}
-                  {/^[a-z0-9_-]{1,39}$/i.test(msg.actor.operator) && !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(msg.actor.operator)
-                    ? `acting for @${msg.actor.operator}`
+                  {/* `operator` is the durable PRINCIPAL; `operator_handle`
+                      (platform#413) is that principal's current label. The
+                      label is shown only beside a non-null principal, and
+                      without it we say the fact we have — never a name we
+                      inferred. An exercised grant is not "approved by". */}
+                  {msg.actor.operatorHandle
+                    ? `acting for @${msg.actor.operatorHandle}`
                     : "acting under a person's grant"}
                 </div>
               )}

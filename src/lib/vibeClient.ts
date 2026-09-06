@@ -217,7 +217,13 @@ export interface VibeMessage {
    * "Operated by" (who owns an agent) is a DIFFERENT fact from the identity
    * endpoint and is never derived from this.
    */
-  actor?: { kind: 'human' | 'agent' | 'automated'; operator: string | null };
+  actor?: {
+    kind: 'human' | 'agent' | 'automated';
+    /** The operator PRINCIPAL id (durable fact) for a delegated send; null otherwise. */
+    operator: string | null;
+    /** The operator's current primary handle at read time (a label; platform#413). null when there is no operator. */
+    operatorHandle: string | null;
+  };
 }
 
 export interface VibeThread {
@@ -1557,7 +1563,11 @@ class BuddyClient {
         // Served actor only; the exact enum, nothing coerced.
         actor:
           m.actor && typeof m.actor === 'object' && ['human', 'agent', 'automated'].includes(m.actor.kind)
-            ? { kind: m.actor.kind, operator: typeof m.actor.operator === 'string' && m.actor.operator ? m.actor.operator : null }
+            ? {
+                kind: m.actor.kind,
+                operator: typeof m.actor.operator === 'string' && m.actor.operator ? m.actor.operator : null,
+                operatorHandle: typeof m.actor.operator_handle === 'string' && m.actor.operator_handle ? m.actor.operator_handle : null,
+              }
             : undefined,
       }));
       return { messages, error: false };

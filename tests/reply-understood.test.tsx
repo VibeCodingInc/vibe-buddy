@@ -123,11 +123,11 @@ describe('one honest way back', () => {
 
 describe('truthful attribution', () => {
   it('a delegated agent message says whose grant it acted under — from the served actor only', async () => {
-    await mount([asked, answer({ id: 'msg_b', actor: { kind: 'agent', operator: 'seth' } })]);
+    await mount([asked, answer({ id: 'msg_b', actor: { kind: 'agent', operator: '3f2b1c9a-1111-4c2d-9e8f-000000000001', operatorHandle: 'seth' } })]);
     expect(screen.getByTestId('acting-for').textContent).toMatch(/acting for @seth/);
   });
   it('a human message, or an agent with no operator, gets no label', async () => {
-    await mount([asked, answer({ id: 'msg_c', actor: { kind: 'human', operator: null } }), answer({ id: 'msg_d', actor: { kind: 'agent', operator: null } })]);
+    await mount([asked, answer({ id: 'msg_c', actor: { kind: 'human', operator: null, operatorHandle: null } }), answer({ id: 'msg_d', actor: { kind: 'agent', operator: null, operatorHandle: null } })]);
     expect(screen.queryByTestId('acting-for')).toBeNull();
   });
 });
@@ -166,7 +166,7 @@ describe('codex round 1', () => {
 
 describe('codex round 2', () => {
   it('a served operator that is a principal id is never shown as a handle', async () => {
-    await mount([asked, answer({ id: 'msg_e', actor: { kind: 'agent', operator: '3f2b1c9a-1111-4c2d-9e8f-000000000001' } })]);
+    await mount([asked, answer({ id: 'msg_e', actor: { kind: 'agent', operator: '3f2b1c9a-1111-4c2d-9e8f-000000000001', operatorHandle: null } })]);
     const label = screen.getByTestId('acting-for').textContent || '';
     expect(label).toMatch(/acting under a person's grant/i);
     expect(label).not.toMatch(/3f2b1c9a|@/);
