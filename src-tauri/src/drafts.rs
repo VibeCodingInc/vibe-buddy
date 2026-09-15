@@ -117,6 +117,15 @@ fn node() -> Result<PathBuf, String> {
     crate::vibeconf::node_binary().ok_or_else(|| "no Node runtime found on this machine".to_string())
 }
 
+/// The CLI's error envelope `{error, message}` is an Err here, so a caller
+/// never deserializes it into a false outcome (codex r5): "sent: false" with
+/// no reason is not what "not_signed_in" means.
+fn envelope_error(v: &serde_json::Value) -> Option<String> {
+    let err = v.get("error")?.as_str()?;
+    let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+    Some(if msg.is_empty() { err.to_string() } else { format!("{err}: {msg}") })
+}
+
 /// Run one verb. The CLI prints exactly one JSON object on stdout; stderr is logs.
 fn run(args: &[&str]) -> Result<serde_json::Value, String> {
     let cli = draft_cli().ok_or_else(|| "the terminal package is not installed here".to_string())?;
@@ -148,6 +157,7 @@ pub async fn terminal_drafts(me: String) -> Result<DraftList, String> {
 pub async fn send_terminal_draft(id: String, rev: String) -> Result<SendOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let v = run(&["send", &id, &rev])?;
+        if let Some(e) = envelope_error(&v) { return Err(e); }
         serde_json::from_value(v).map_err(|e| e.to_string())
     }).await.map_err(|e| format!("worker died: {e}"))?
 }
@@ -157,13 +167,21 @@ pub async fn send_terminal_draft(id: String, rev: String) -> Result<SendOutcome,
 pub async fn discard_terminal_draft(id: String) -> Result<DiscardOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let v = run(&["discard", &id])?;
+        if let Some(e) = envelope_error(&v) { return Err(e); }
         serde_json::from_value(v).map_err(|e| e.to_string())
     }).await.map_err(|e| format!("worker died: {e}"))?
 }
 
 #[cfg(test)]
 mod tests {
-    use super::semver;
+    use super::{semver, envelope_error};
+    #[test]
+    fn a_cli_error_envelope_is_an_error_not_an_outcome() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"error":"not_signed_in","message":"no /vibe account on this machine"}"#).unwrap();
+        assert_eq!(envelope_error(&v).as_deref(), Some("not_signed_in: no /vibe account on this machine"));
+        let ok: serde_json::Value = serde_json::from_str(r#"{"id":"d1","sent":true}"#).unwrap();
+        assert!(envelope_error(&ok).is_none());
+    }
     #[test]
     fn newest_is_a_version_not_a_string() {
         assert!(semver("0.8.10") > semver("0.8.9"));

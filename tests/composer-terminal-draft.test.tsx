@@ -18,10 +18,11 @@ let drafts: unknown[] = [];
 let sendResult: unknown = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
 let discardResult: { cancelled: boolean; display: string | null; may_have_sent?: boolean } = { cancelled: true, display: null };
 let throwList = false;
+let listDelay: Promise<unknown> | null = null;
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => {
     invoked.push({ cmd, args });
-    if (cmd === 'terminal_drafts') { if (throwList) throw new Error('the terminal package is not installed here'); return { handle: 'ada', drafts, error: null, message: null }; }
+    if (cmd === 'terminal_drafts') { if (throwList) throw new Error('the terminal package is not installed here'); if (listDelay) await listDelay; return { handle: 'ada', drafts, error: null, message: null }; }
     if (cmd === 'send_terminal_draft') return sendResult;
     if (cmd === 'discard_terminal_draft') return { id: (args as { id: string }).id, status: discardResult.cancelled ? 'cancelled' : 'sending', cancelled: discardResult.cancelled, may_have_sent: Boolean(discardResult.may_have_sent), display: discardResult.display };
     if (cmd === 'read_return_bindings') return [];
@@ -38,7 +39,7 @@ import { setCachedMessages } from '../src/lib/messageCache';
 const draft = { id: 'd1', to: 'linus', why: 'you named them', why_now: 'he asked you this morning', message: 'Which backoff curve did you land on? I kept the 3-try cap.', refs: [], reply_to: null, rev: 'abcd1234', created_at: Date.now() };
 
 beforeEach(() => {
-  invoked.length = 0; drafts = []; memStore.clear(); discardResult = { cancelled: true, display: null };
+  invoked.length = 0; drafts = []; memStore.clear(); discardResult = { cancelled: true, display: null }; listDelay = null; throwList = false;
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
   vi.spyOn(realtime, 'goBackground').mockImplementation(() => {});
@@ -173,6 +174,24 @@ describe('deciding here goes through the terminal package', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(screen.getByTestId('terminal-draft-outcome').textContent).toMatch(/may have reached/);
+  });
+  it('a poll that began before a decision cannot resurrect the finished draft (codex r5)', async () => {
+    drafts = [draft];
+    await mount();
+    await screen.findByTestId('terminal-draft');
+    // Hold the NEXT list read open, then decide while it is in flight: the
+    // read captured the draft before Discard, and resolves after it.
+    let releaseList: (v: unknown) => void = () => {};
+    listDelay = new Promise((r) => { releaseList = r; });
+    const anyInvoke = (await import('@tauri-apps/api/core')).invoke;
+    const pending = anyInvoke('terminal_drafts', { me: 'ada' });   // the in-flight poll
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.queryByTestId('terminal-draft')).toBeNull();
+    releaseList(null);
+    await pending;
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.queryByTestId('terminal-draft')).toBeNull();
   });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];

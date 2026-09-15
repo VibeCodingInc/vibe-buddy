@@ -232,6 +232,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // through the same path the poll uses (realtime.openDM always fetches).
   const incomingRef = useRef<((thread: VibeMessage[]) => void) | null>(null);
   const mountedRef = useRef(true);
+  // Every decision (Send/Edit/Discard) bumps this; a poll that started before
+  // the decision may not overwrite what the decision left (codex r5): a
+  // finished draft must not come back with live controls.
+  const draftGenRef = useRef(0);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; incomingRef.current = null; }; }, [chatWith]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
@@ -600,8 +604,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   useEffect(() => {
     let alive = true;
     const look = async () => {
+      const gen = draftGenRef.current;
       const r = await draftFor(handle, chatWith);
-      if (!alive) return;
+      if (!alive || gen !== draftGenRef.current) return;   // a decision landed meanwhile
       setTerminalDraft(r.kind === 'draft' ? r.draft : null);
       setDraftUnavailable(r.kind === 'unavailable' ? r.reason : null);
     };
@@ -613,6 +618,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   /** Send exactly the revision shown. The package answers; Buddy repeats it. */
   const sendTerminalDraft = async () => {
     if (!terminalDraft || draftDeciding) return;
+    draftGenRef.current += 1;
     setDraftDeciding(true); setDraftOutcome(null);
     try {
       const o = await sendDraft(terminalDraft.id, terminalDraft.rev);
@@ -644,6 +650,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   /** Discard here is discard everywhere. */
   const discardTerminalDraft = async () => {
     if (!terminalDraft || draftDeciding) return;
+    draftGenRef.current += 1;
     setDraftDeciding(true); setDraftOutcome(null);
     try {
       const o = await discardDraft(terminalDraft.id);
@@ -674,6 +681,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     // Your own unsent words are never overwritten silently (codex r2).
     if (input.trim()) { setDraftOutcome('you have unsent text in the box — send or clear it first, then Edit'); return; }
     const text = terminalDraft.message;
+    draftGenRef.current += 1;
     setDraftDeciding(true); setDraftOutcome(null);
     // The copy is enabled ONLY once the package confirms the original is
     // cancelled (codex P1). If it refuses — a send is under way, or the store
