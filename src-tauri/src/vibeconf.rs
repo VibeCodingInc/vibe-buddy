@@ -359,7 +359,7 @@ fn resolve_node_with(
 
 /// Resolve Node without trusting Finder's minimal PATH. The explicit manager
 /// locations cover nvm, asdf and Volta, including versioned nvm/asdf installs.
-fn node_binary() -> Option<PathBuf> {
+pub(crate) fn node_binary() -> Option<PathBuf> {
     let home = dirs::home_dir();
     let path_env = env::var_os("PATH");
     resolve_node_with(home.as_deref(), path_env.as_deref(), Path::is_file)

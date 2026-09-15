@@ -11,6 +11,8 @@ import { loadReturnBindings, bindingFor, answersYourAsk, answersLine, returnActi
 import { terminalSessions, frontSession } from '../lib/terminal';
 import { isFreshLastSeen } from '../lib/freshness';
 import { hasNoReadEvidence, isTestAccount } from './list/shared';
+import { draftFor, sendDraft, discardDraft, outcomeLine, type TerminalDraft } from '../lib/terminalDrafts';
+import { getNotificationOwner } from '../lib/notifications';
 
 interface DMPanelProps {
   handle: string;
@@ -218,6 +220,26 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
   const [sending, setSending] = useState(false);
+  // The draft your coding agent prepared for THIS person in a terminal session,
+  // if there is one. Shown verbatim; decided here; sent only by the terminal
+  // package. Never a second sender (buddy#56 slice 2).
+  const [terminalDraft, setTerminalDraft] = useState<TerminalDraft | null>(null);
+  const [draftDeciding, setDraftDeciding] = useState(false);
+  const [draftOutcome, setDraftOutcome] = useState<string | null>(null);
+  // Why no draft is shown, when the reason is not "there is none" (package
+  // missing, other account, bridge failed). Rendered as itself, never as empty.
+  const [draftUnavailable, setDraftUnavailable] = useState<string | null>(null);
+  // The thread's incoming handler, kept so a send can force one read-back
+  // through the same path the poll uses (realtime.openDM always fetches).
+  const incomingRef = useRef<((thread: VibeMessage[]) => void) | null>(null);
+  const mountedRef = useRef(true);
+  // Every decision (Send/Edit/Discard) bumps this when it COMPLETES, and marks
+  // itself in flight while it runs. A poll that started before the bump may
+  // not write; a poll that starts during a decision does not run at all
+  // (codex r5/r6): a finished draft must not come back with live controls.
+  const draftGenRef = useRef(0);
+  const decidingRef = useRef(false);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; incomingRef.current = null; }; }, [chatWith]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
   // UI defect): rows derived from split('\n') counted newline characters, so
@@ -553,6 +575,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
 
     // Use realtime layer — SSE primary, polling fallback
     realtime.init(handle);
+    incomingRef.current = handleIncoming;
     realtime.openDM(chatWith, handleIncoming);
 
     // Listen for typing events
@@ -577,6 +600,122 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Look for a terminal draft addressed to this person: on open, and while
+  // the conversation stays open, so a draft prepared after this panel appeared
+  // still shows up. Bound to the account: a draft never shows for another.
+  useEffect(() => {
+    let alive = true;
+    const look = async () => {
+      if (decidingRef.current) return;                      // a decision is in flight: its result wins
+      const gen = draftGenRef.current;
+      const r = await draftFor(handle, chatWith);
+      if (!alive || gen !== draftGenRef.current || decidingRef.current) return;   // a decision landed meanwhile
+      setTerminalDraft(r.kind === 'draft' ? r.draft : null);
+      setDraftUnavailable(r.kind === 'unavailable' ? r.reason : null);
+    };
+    void look();
+    const t = window.setInterval(() => { void look(); }, 15_000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [handle, chatWith]);
+
+  /** Send exactly the revision shown. The package answers; Buddy repeats it. */
+  const sendTerminalDraft = async () => {
+    if (!terminalDraft || draftDeciding) return;
+    decidingRef.current = true;
+    setDraftDeciding(true); setDraftOutcome(null);
+    try {
+      const o = await sendDraft(terminalDraft.id, terminalDraft.rev);
+      const { sent, line } = outcomeLine(o);
+      // A successful send can still carry a warning from the package (the
+      // local return note could not be saved, the delivery was replayed…).
+      // Its words come first; "exactly as shown" is only true of the bytes.
+      setDraftOutcome(sent ? (o.display ? `sent to @${terminalDraft.to} — ${o.display}` : `sent to @${terminalDraft.to} — exactly as shown`) : line);
+      if (sent) {
+        setTerminalDraft(null);
+        setPollArmed(true);   // a first message into an empty thread must be read back, too (codex r1)
+        // An already-open thread is not re-read by arming (codex r2): force one
+        // fetch now through the same path the poll uses. SSE may not deliver
+        // your own send back as an event, so this is the receipt's read-back.
+        // Only if this conversation is still the one on screen (codex r3 P1):
+        // navigating away mid-send unmounts this panel, and re-subscribing the
+        // singleton to a dead conversation would disconnect the live one.
+        if (incomingRef.current && mountedRef.current) realtime.openDM(chatWith, incomingRef.current);
+        // The receipt outlives this panel: the thread now has a stored message
+        // even if the read-back has not landed when the person leaves (codex r3)
+        // — but only for the account that sent it. A sign-out mid-send must not
+        // credit the next account with evidence it never earned (codex r7).
+        if ((getNotificationOwner() || '').toLowerCase() === handle.toLowerCase()) realtime.recordStoredMessageWith(chatWith);
+      } else if (o.status === 'unknown' || o.unconfirmed) {
+        // The fate is unknown: keep the draft on screen. Send again retries
+        // exactly this text under the same key; Discard is still allowed.
+        setTerminalDraft({ ...terminalDraft, status: 'unknown', unconfirmed: true });
+      }
+    } catch (e) {
+      setDraftOutcome(e instanceof Error ? e.message : String(e));
+    } finally { draftGenRef.current += 1; decidingRef.current = false; setDraftDeciding(false); }
+  };
+
+  /** Discard here is discard everywhere. */
+  const discardTerminalDraft = async () => {
+    if (!terminalDraft || draftDeciding) return;
+    decidingRef.current = true;
+    setDraftDeciding(true); setDraftOutcome(null);
+    try {
+      const o = await discardDraft(terminalDraft.id);
+      if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it'); return; }
+      setTerminalDraft(null);
+      // Cancelling an UNCONFIRMED attempt only cancels future retries; the
+      // earlier send may have reached them. The package says so — keep its
+      // words rather than a clean "discarded" (codex r2).
+      setDraftOutcome(o.may_have_sent ? (o.display || 'discarded — but an earlier Send may already have reached them') : 'discarded — gone from the terminal too');
+    } catch (e) {
+      setDraftOutcome(e instanceof Error ? e.message : String(e));
+    } finally { draftGenRef.current += 1; decidingRef.current = false; setDraftDeciding(false); }
+  };
+
+  /**
+   * Edit here: the text moves into the ordinary composer and the terminal's
+   * draft is discarded, because the revision you approve must be the bytes
+   * you see. What you then send is an ordinary Buddy message — no digest, no
+   * agent authorship claim — which is the truth about it.
+   */
+  const editTerminalDraft = async () => {
+    if (!terminalDraft || draftDeciding) return;
+    // An unconfirmed send may already have reached them (codex r2 P1). A
+    // cancel then only stops retries — copying the text into an ordinary send
+    // would risk delivering it twice. Edit is not offered; this is the guard
+    // behind the hidden button.
+    if (terminalDraft.unconfirmed) { setDraftOutcome('the last Send may have reached them — retry it as it is, or discard it; editing would risk sending twice'); return; }
+    // Your own unsent words are never overwritten silently (codex r2).
+    if (input.trim()) { setDraftOutcome('you have unsent text in the box — send or clear it first, then Edit'); return; }
+    const text = terminalDraft.message;
+    decidingRef.current = true;
+    setDraftDeciding(true); setDraftOutcome(null);
+    // The copy is enabled ONLY once the package confirms the original is
+    // cancelled (codex P1). If it refuses — a send is under way, or the store
+    // could not be written — the draft stays as it is and nothing is copied:
+    // an editable copy beside a live original is two sendable versions.
+    try {
+      const o = await discardDraft(terminalDraft.id);
+      if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it, so nothing was copied'); return; }
+      // The terminal may have attempted a send between Buddy's refreshes
+      // (codex r3 P1). A cancel that comes back with a warning that an earlier
+      // attempt may have reached them means: cancelled for the future, possibly
+      // delivered already — so no editable copy, whatever Buddy believed.
+      if (o.may_have_sent) {
+        setTerminalDraft(null);
+        setDraftOutcome(o.display || 'the earlier Send may already have reached them — nothing was copied');
+        return;
+      }
+      setTerminalDraft(null);
+      // Text typed while the discard was pending wins over the copy.
+      setInput((cur) => (cur.trim() ? cur : text));
+      setDraftOutcome("editing — the terminal's draft was discarded; what you send now is your own words");
+    } catch (e) {
+      setDraftOutcome(e instanceof Error ? e.message : String(e));
+    } finally { draftGenRef.current += 1; decidingRef.current = false; setDraftDeciding(false); }
+  };
 
   const send = async (text?: string, forceUnlinked?: boolean) => {
     const msg = text || input.trim();
@@ -1442,6 +1581,64 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           flexShrink: 0,
         }}
       >
+        {/* The terminal's draft for this person, shown exactly as the terminal
+            preview showed it. Send goes through the terminal package with the
+            revision of these bytes; Edit moves the text into the box below and
+            discards the draft; Discard is everywhere at once. Nothing here is
+            Buddy's own send. */}
+        {/* Everything the terminal draft adds above the composer — the draft,
+            its outcome line, or the unavailable line — lives in ONE bounded,
+            scrolling region (codex r7/r9), so at 300×400 the ordinary composer
+            below is never pushed out of the window by any combination of them. */}
+        {(terminalDraft || draftOutcome || (!terminalDraft && draftUnavailable)) && (
+        <div data-testid="terminal-draft-region" style={{ maxHeight: '40vh', overflowY: 'auto', marginBottom: 8 }}>
+        {terminalDraft && (
+          <div
+            data-testid="terminal-draft"
+            style={{
+              marginBottom: 8,
+              padding: '8px 10px',
+              border: `1px solid ${color.line}`,
+              borderRadius: radius.md,
+              fontSize: size[12],
+            }}
+          >
+            <div style={{ color: color.dim, marginBottom: 4 }}>
+              your terminal prepared this for @{terminalDraft.to}
+              {terminalDraft.why_now ? <span> · {terminalDraft.why_now}</span> : null}
+            </div>
+            <div data-testid="terminal-draft-message" style={{ whiteSpace: 'pre-wrap', marginBottom: 6 }}>{terminalDraft.message}</div>
+            {terminalDraft.unconfirmed && (
+              <div style={{ color: color.dim, marginBottom: 6 }}>the last Send did not confirm — Send again retries exactly this text, once</div>
+            )}
+            {terminalDraft.refs.length > 0 && (
+              <div style={{ color: color.dim, marginBottom: 6 }}>
+                {terminalDraft.refs.map((r) => <div key={r.url}>↗ {r.title || r.url}</div>)}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => { void sendTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                Send to @{terminalDraft.to}
+              </button>
+              {!terminalDraft.unconfirmed && (
+                <button type="button" onClick={() => { void editTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                  Edit
+                </button>
+              )}
+              <button type="button" onClick={() => { void discardTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
+        {draftOutcome && (
+          <div data-testid="terminal-draft-outcome" style={{ color: color.dim, fontSize: size[12], marginBottom: 6 }}>{draftOutcome}</div>
+        )}
+        {!terminalDraft && draftUnavailable && (
+          <div data-testid="terminal-draft-unavailable" style={{ color: color.faint, fontSize: size[11], marginBottom: 6 }}>terminal drafts unavailable: {draftUnavailable}</div>
+        )}
+        </div>
+        )}
         {/* The chosen reply target, shown before send so the human sees which
             message this will answer — and can cancel back to an ordinary
             send. This is the ONLY thing that sets reply_to; there is no
