@@ -652,7 +652,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       // Cancelling an UNCONFIRMED attempt only cancels future retries; the
       // earlier send may have reached them. The package says so — keep its
       // words rather than a clean "discarded" (codex r2).
-      setDraftOutcome(terminalDraft.unconfirmed && o.display ? o.display : 'discarded — gone from the terminal too');
+      setDraftOutcome(o.may_have_sent ? (o.display || 'discarded — but an earlier Send may already have reached them') : 'discarded — gone from the terminal too');
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
     } finally { setDraftDeciding(false); }
@@ -686,9 +686,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       // (codex r3 P1). A cancel that comes back with a warning that an earlier
       // attempt may have reached them means: cancelled for the future, possibly
       // delivered already — so no editable copy, whatever Buddy believed.
-      if (o.status === 'cancelled' && o.display && /unconfirmed|may have|might have|reached/i.test(o.display)) {
+      if (o.may_have_sent) {
         setTerminalDraft(null);
-        setDraftOutcome(o.display);
+        setDraftOutcome(o.display || 'the earlier Send may already have reached them — nothing was copied');
         return;
       }
       setTerminalDraft(null);

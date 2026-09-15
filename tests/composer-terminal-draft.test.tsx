@@ -16,14 +16,14 @@ const memStore = new Map<string, string>();
 const invoked: Array<{ cmd: string; args: unknown }> = [];
 let drafts: unknown[] = [];
 let sendResult: unknown = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
-let discardResult: { cancelled: boolean; display: string | null } = { cancelled: true, display: null };
+let discardResult: { cancelled: boolean; display: string | null; may_have_sent?: boolean } = { cancelled: true, display: null };
 let throwList = false;
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => {
     invoked.push({ cmd, args });
     if (cmd === 'terminal_drafts') { if (throwList) throw new Error('the terminal package is not installed here'); return { handle: 'ada', drafts, error: null, message: null }; }
     if (cmd === 'send_terminal_draft') return sendResult;
-    if (cmd === 'discard_terminal_draft') return { id: (args as { id: string }).id, status: discardResult.cancelled ? 'cancelled' : 'sending', cancelled: discardResult.cancelled, display: discardResult.display };
+    if (cmd === 'discard_terminal_draft') return { id: (args as { id: string }).id, status: discardResult.cancelled ? 'cancelled' : 'sending', cancelled: discardResult.cancelled, may_have_sent: Boolean(discardResult.may_have_sent), display: discardResult.display };
     if (cmd === 'read_return_bindings') return [];
     if (cmd === 'terminal_sessions') return { sessions: [], warnings: [] };
     return null;
@@ -48,9 +48,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-const mount = async () => {
-  setCachedMessages('ada', 'linus', []);
-  render(<DMPanel handle="ada" chatWith="linus" onBack={() => {}} users={[]} hasServerThread />);
+const mount = async (them = 'linus') => {
+  setCachedMessages('ada', them, []);
+  render(<DMPanel handle="ada" chatWith={them} onBack={() => {}} users={[]} hasServerThread />);
   await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 };
 
@@ -137,7 +137,7 @@ describe('deciding here goes through the terminal package', () => {
   });
   it('Edit makes no copy when the cancel comes back warning an earlier attempt may have reached them (codex r3 P1)', async () => {
     drafts = [draft];   // Buddy believes it is confirmed-unsent
-    discardResult = { cancelled: true, display: 'Draft d1 cancelled. An earlier unconfirmed Send may have reached @linus.' };
+    discardResult = { cancelled: true, may_have_sent: true, display: 'Draft d1 cancelled. An earlier unconfirmed Send may have reached @linus.' };
     await mount();
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
@@ -157,6 +157,22 @@ describe('deciding here goes through the terminal package', () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     expect((realtime.openDM as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(before);
     sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
+  });
+  it('a recipient named @reached is not uncertainty: Edit copies normally (codex r4)', async () => {
+    drafts = [{ ...draft, to: 'reached' }];
+    discardResult = { cancelled: true, may_have_sent: false, display: 'Cancelled — nothing sent to @reached. The draft stays on your machine.' };
+    await mount('reached');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect((screen.getByPlaceholderText('Message @reached...') as HTMLTextAreaElement).value).toBe(draft.message);
+  });
+  it('Discard of a draft the terminal sent unconfirmed behind Buddy\'s back keeps the warning (codex r4)', async () => {
+    drafts = [draft];   // Buddy's cached copy says confirmed-unsent
+    discardResult = { cancelled: true, may_have_sent: true, display: 'Cancelled. An earlier unconfirmed Send may have reached @linus.' };
+    await mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.getByTestId('terminal-draft-outcome').textContent).toMatch(/may have reached/);
   });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];

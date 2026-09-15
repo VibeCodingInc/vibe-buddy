@@ -77,6 +77,10 @@ pub struct DiscardOutcome {
     /// permits Buddy to treat the draft as gone.
     #[serde(default)]
     pub cancelled: bool,
+    /// An earlier attempt may already have been delivered: cancel stops only
+    /// future retries. A field, so no surface has to read it out of prose.
+    #[serde(default)]
+    pub may_have_sent: bool,
     pub display: Option<String>,
 }
 

@@ -34,7 +34,7 @@ export interface TerminalDraft {
 
 export interface DraftList { handle: string | null; drafts: TerminalDraft[]; error: string | null; message: string | null }
 export interface SendOutcome { id: string; sent: boolean; message_id: string | null; status: string | null; display: string | null; definite: boolean; unconfirmed?: boolean }
-export interface DiscardOutcome { id: string; status: string | null; cancelled: boolean; display: string | null }
+export interface DiscardOutcome { id: string; status: string | null; cancelled: boolean; /** an earlier attempt may already have been delivered — cancel stops only future retries */ may_have_sent?: boolean; display: string | null }
 
 export type DraftAvailability =
   | { kind: 'draft'; draft: TerminalDraft }
