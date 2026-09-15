@@ -225,6 +225,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const [terminalDraft, setTerminalDraft] = useState<TerminalDraft | null>(null);
   const [draftDeciding, setDraftDeciding] = useState(false);
   const [draftOutcome, setDraftOutcome] = useState<string | null>(null);
+  // Why no draft is shown, when the reason is not "there is none" (package
+  // missing, other account, bridge failed). Rendered as itself, never as empty.
+  const [draftUnavailable, setDraftUnavailable] = useState<string | null>(null);
+  // The thread's incoming handler, kept so a send can force one read-back
+  // through the same path the poll uses (realtime.openDM always fetches).
+  const incomingRef = useRef<((thread: VibeMessage[]) => void) | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
   // UI defect): rows derived from split('\n') counted newline characters, so
@@ -560,6 +566,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
 
     // Use realtime layer — SSE primary, polling fallback
     realtime.init(handle);
+    incomingRef.current = handleIncoming;
     realtime.openDM(chatWith, handleIncoming);
 
     // Listen for typing events
@@ -594,6 +601,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       const r = await draftFor(handle, chatWith);
       if (!alive) return;
       setTerminalDraft(r.kind === 'draft' ? r.draft : null);
+      setDraftUnavailable(r.kind === 'unavailable' ? r.reason : null);
     };
     void look();
     const t = window.setInterval(() => { void look(); }, 15_000);
@@ -610,7 +618,11 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setDraftOutcome(sent ? `sent to @${terminalDraft.to} — exactly as shown` : line);
       if (sent) {
         setTerminalDraft(null);
-        setPollArmed(true);   // a first message into an empty thread must be read back, too (codex P2)
+        setPollArmed(true);   // a first message into an empty thread must be read back, too (codex r1)
+        // An already-open thread is not re-read by arming (codex r2): force one
+        // fetch now through the same path the poll uses. SSE may not deliver
+        // your own send back as an event, so this is the receipt's read-back.
+        if (incomingRef.current) realtime.openDM(chatWith, incomingRef.current);
       } else if (o.status === 'unknown' || o.unconfirmed) {
         // The fate is unknown: keep the draft on screen. Send again retries
         // exactly this text under the same key; Discard is still allowed.
@@ -629,7 +641,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       const o = await discardDraft(terminalDraft.id);
       if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it'); return; }
       setTerminalDraft(null);
-      setDraftOutcome('discarded — gone from the terminal too');
+      // Cancelling an UNCONFIRMED attempt only cancels future retries; the
+      // earlier send may have reached them. The package says so — keep its
+      // words rather than a clean "discarded" (codex r2).
+      setDraftOutcome(terminalDraft.unconfirmed && o.display ? o.display : 'discarded — gone from the terminal too');
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
     } finally { setDraftDeciding(false); }
@@ -643,6 +658,13 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
    */
   const editTerminalDraft = async () => {
     if (!terminalDraft || draftDeciding) return;
+    // An unconfirmed send may already have reached them (codex r2 P1). A
+    // cancel then only stops retries — copying the text into an ordinary send
+    // would risk delivering it twice. Edit is not offered; this is the guard
+    // behind the hidden button.
+    if (terminalDraft.unconfirmed) { setDraftOutcome('the last Send may have reached them — retry it as it is, or discard it; editing would risk sending twice'); return; }
+    // Your own unsent words are never overwritten silently (codex r2).
+    if (input.trim()) { setDraftOutcome('you have unsent text in the box — send or clear it first, then Edit'); return; }
     const text = terminalDraft.message;
     setDraftDeciding(true); setDraftOutcome(null);
     // The copy is enabled ONLY once the package confirms the original is
@@ -653,7 +675,8 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       const o = await discardDraft(terminalDraft.id);
       if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it, so nothing was copied'); return; }
       setTerminalDraft(null);
-      setInput(text);
+      // Text typed while the discard was pending wins over the copy.
+      setInput((cur) => (cur.trim() ? cur : text));
       setDraftOutcome("editing — the terminal's draft was discarded; what you send now is your own words");
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
@@ -1557,9 +1580,11 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               <button type="button" onClick={() => { void sendTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
                 Send to @{terminalDraft.to}
               </button>
-              <button type="button" onClick={() => { void editTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
-                Edit
-              </button>
+              {!terminalDraft.unconfirmed && (
+                <button type="button" onClick={() => { void editTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                  Edit
+                </button>
+              )}
               <button type="button" onClick={() => { void discardTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
                 Discard
               </button>
@@ -1568,6 +1593,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         )}
         {draftOutcome && (
           <div data-testid="terminal-draft-outcome" style={{ color: color.dim, fontSize: size[12], marginBottom: 6 }}>{draftOutcome}</div>
+        )}
+        {!terminalDraft && draftUnavailable && (
+          <div data-testid="terminal-draft-unavailable" style={{ color: color.faint, fontSize: size[11], marginBottom: 6 }}>terminal drafts unavailable: {draftUnavailable}</div>
         )}
         {/* The chosen reply target, shown before send so the human sees which
             message this will answer — and can cancel back to an ordinary

@@ -17,10 +17,11 @@ const invoked: Array<{ cmd: string; args: unknown }> = [];
 let drafts: unknown[] = [];
 let sendResult: unknown = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
 let discardResult: { cancelled: boolean; display: string | null } = { cancelled: true, display: null };
+let throwList = false;
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => {
     invoked.push({ cmd, args });
-    if (cmd === 'terminal_drafts') return { handle: 'ada', drafts, error: null, message: null };
+    if (cmd === 'terminal_drafts') { if (throwList) throw new Error('the terminal package is not installed here'); return { handle: 'ada', drafts, error: null, message: null }; }
     if (cmd === 'send_terminal_draft') return sendResult;
     if (cmd === 'discard_terminal_draft') return { id: (args as { id: string }).id, status: discardResult.cancelled ? 'cancelled' : 'sending', cancelled: discardResult.cancelled, display: discardResult.display };
     if (cmd === 'read_return_bindings') return [];
@@ -98,6 +99,41 @@ describe('deciding here goes through the terminal package', () => {
     expect(screen.getByTestId('terminal-draft')).toBeTruthy();
     expect(screen.getByTestId('terminal-draft').textContent).toMatch(/did not confirm — Send again retries exactly this text/);
     sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
+  });
+  it('an unconfirmed draft offers no Edit at all — it may already have reached them (codex r2 P1)', async () => {
+    drafts = [{ ...draft, status: 'unknown', unconfirmed: true }];
+    await mount();
+    await screen.findByTestId('terminal-draft');
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Send to @linus' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeTruthy();
+  });
+  it('Edit never overwrites your own unsent words', async () => {
+    drafts = [draft];
+    await mount();
+    await screen.findByTestId('terminal-draft');
+    const box = screen.getByPlaceholderText('Message @linus...') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'my own half-typed line' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(box.value).toBe('my own half-typed line');
+    expect(invoked.some((c) => c.cmd === 'discard_terminal_draft')).toBe(false, 'nothing was discarded');
+    expect(screen.getByTestId('terminal-draft')).toBeTruthy();
+  });
+  it('a lookup that fails says so, distinct from "no draft"', async () => {
+    throwList = true;
+    await mount();
+    expect((await screen.findByTestId('terminal-draft-unavailable')).textContent).toMatch(/unavailable/);
+    expect(screen.queryByTestId('terminal-draft')).toBeNull();
+    throwList = false;
+  });
+  it('a confirmed send forces one read-back of the open thread', async () => {
+    drafts = [draft];
+    await mount();
+    const before = (realtime.openDM as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect((realtime.openDM as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBeGreaterThan(before);
   });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];
