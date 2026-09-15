@@ -231,6 +231,8 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // The thread's incoming handler, kept so a send can force one read-back
   // through the same path the poll uses (realtime.openDM always fetches).
   const incomingRef = useRef<((thread: VibeMessage[]) => void) | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; incomingRef.current = null; }; }, [chatWith]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
   // UI defect): rows derived from split('\n') counted newline characters, so
@@ -622,7 +624,13 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         // An already-open thread is not re-read by arming (codex r2): force one
         // fetch now through the same path the poll uses. SSE may not deliver
         // your own send back as an event, so this is the receipt's read-back.
-        if (incomingRef.current) realtime.openDM(chatWith, incomingRef.current);
+        // Only if this conversation is still the one on screen (codex r3 P1):
+        // navigating away mid-send unmounts this panel, and re-subscribing the
+        // singleton to a dead conversation would disconnect the live one.
+        if (incomingRef.current && mountedRef.current) realtime.openDM(chatWith, incomingRef.current);
+        // The receipt outlives this panel: the thread now has a stored message
+        // even if the read-back has not landed when the person leaves (codex r3).
+        realtime.recordStoredMessageWith(chatWith);
       } else if (o.status === 'unknown' || o.unconfirmed) {
         // The fate is unknown: keep the draft on screen. Send again retries
         // exactly this text under the same key; Discard is still allowed.
@@ -674,6 +682,15 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     try {
       const o = await discardDraft(terminalDraft.id);
       if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it, so nothing was copied'); return; }
+      // The terminal may have attempted a send between Buddy's refreshes
+      // (codex r3 P1). A cancel that comes back with a warning that an earlier
+      // attempt may have reached them means: cancelled for the future, possibly
+      // delivered already — so no editable copy, whatever Buddy believed.
+      if (o.status === 'cancelled' && o.display && /unconfirmed|may have|might have|reached/i.test(o.display)) {
+        setTerminalDraft(null);
+        setDraftOutcome(o.display);
+        return;
+      }
       setTerminalDraft(null);
       // Text typed while the discard was pending wins over the copy.
       setInput((cur) => (cur.trim() ? cur : text));

@@ -129,6 +129,9 @@ pub async fn terminal_drafts(me: String) -> Result<DraftList, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let v = run(&["list"])?;
         let list: DraftList = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        // The CLI's own errors (not_signed_in, store_failed) carry no handle and
+        // must reach the surface as themselves, not as a mismatch (codex r3).
+        if list.error.is_some() { return Ok(DraftList { drafts: vec![], ..list }); }
         match &list.handle {
             Some(h) if h.eq_ignore_ascii_case(&me) => Ok(list),
             _ => Ok(DraftList { handle: list.handle, drafts: vec![], error: Some("account_mismatch".into()), message: Some("the terminal is signed in as someone else".into()) }),

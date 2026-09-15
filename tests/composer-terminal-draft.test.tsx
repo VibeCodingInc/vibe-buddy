@@ -135,6 +135,29 @@ describe('deciding here goes through the terminal package', () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect((realtime.openDM as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBeGreaterThan(before);
   });
+  it('Edit makes no copy when the cancel comes back warning an earlier attempt may have reached them (codex r3 P1)', async () => {
+    drafts = [draft];   // Buddy believes it is confirmed-unsent
+    discardResult = { cancelled: true, display: 'Draft d1 cancelled. An earlier unconfirmed Send may have reached @linus.' };
+    await mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect((screen.getByPlaceholderText('Message @linus...') as HTMLTextAreaElement).value).toBe('');
+    expect(screen.queryByTestId('terminal-draft')).toBeNull();
+    expect(screen.getByTestId('terminal-draft-outcome').textContent).toMatch(/may have reached/);
+  });
+  it('a send that finishes after you left the conversation does not re-subscribe the dead one (codex r3 P1)', async () => {
+    drafts = [draft];
+    let release: (v: unknown) => void = () => {};
+    sendResult = new Promise((r) => { release = r; }) as unknown;
+    await mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
+    cleanup();   // navigate away while the send is pending
+    const before = (realtime.openDM as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    release({ id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false });
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect((realtime.openDM as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(before);
+    sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
+  });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];
     discardResult = { cancelled: false, display: 'Draft d1 is being sent right now — it can\'t be cancelled.' };
