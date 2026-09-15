@@ -627,7 +627,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     try {
       const o = await sendDraft(terminalDraft.id, terminalDraft.rev);
       const { sent, line } = outcomeLine(o);
-      setDraftOutcome(sent ? `sent to @${terminalDraft.to} — exactly as shown` : line);
+      // A successful send can still carry a warning from the package (the
+      // local return note could not be saved, the delivery was replayed…).
+      // Its words come first; "exactly as shown" is only true of the bytes.
+      setDraftOutcome(sent ? (o.display ? `sent to @${terminalDraft.to} — ${o.display}` : `sent to @${terminalDraft.to} — exactly as shown`) : line);
       if (sent) {
         setTerminalDraft(null);
         setPollArmed(true);   // a first message into an empty thread must be read back, too (codex r1)

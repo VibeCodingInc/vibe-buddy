@@ -228,6 +228,15 @@ describe('deciding here goes through the terminal package', () => {
     setNotificationOwner('ada');
     sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
   });
+  it('a successful send keeps any warning the package attached (codex r8)', async () => {
+    drafts = [draft];
+    sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: '(sent; could not save the local return note: disk full)', definite: false };
+    await mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect((await screen.findByTestId('terminal-draft-outcome')).textContent).toMatch(/could not save the local return note/);
+    sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
+  });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];
     discardResult = { cancelled: false, display: 'Draft d1 is being sent right now — it can\'t be cancelled.' };
