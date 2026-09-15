@@ -193,6 +193,22 @@ describe('deciding here goes through the terminal package', () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(screen.queryByTestId('terminal-draft')).toBeNull();
   });
+  it('a poll that STARTS during a decision cannot overwrite it either (codex r6)', async () => {
+    drafts = [draft];
+    let releaseSend: (v: unknown) => void = () => {};
+    sendResult = new Promise((r) => { releaseSend = r; }) as unknown;
+    await mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
+    // While the send is in flight, a refresh fires (the 15s tick, simulated by
+    // the same lookup the effect uses) and would see the draft still listed.
+    const listsBefore = invoked.filter((c) => c.cmd === 'terminal_drafts').length;
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    releaseSend({ id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false });
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(screen.queryByTestId('terminal-draft')).toBeNull();
+    expect(invoked.filter((c) => c.cmd === 'terminal_drafts').length).toBe(listsBefore);   // no poll ran mid-decision
+    sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
+  });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];
     discardResult = { cancelled: false, display: 'Draft d1 is being sent right now — it can\'t be cancelled.' };

@@ -232,10 +232,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // through the same path the poll uses (realtime.openDM always fetches).
   const incomingRef = useRef<((thread: VibeMessage[]) => void) | null>(null);
   const mountedRef = useRef(true);
-  // Every decision (Send/Edit/Discard) bumps this; a poll that started before
-  // the decision may not overwrite what the decision left (codex r5): a
-  // finished draft must not come back with live controls.
+  // Every decision (Send/Edit/Discard) bumps this when it COMPLETES, and marks
+  // itself in flight while it runs. A poll that started before the bump may
+  // not write; a poll that starts during a decision does not run at all
+  // (codex r5/r6): a finished draft must not come back with live controls.
   const draftGenRef = useRef(0);
+  const decidingRef = useRef(false);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; incomingRef.current = null; }; }, [chatWith]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
@@ -604,9 +606,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   useEffect(() => {
     let alive = true;
     const look = async () => {
+      if (decidingRef.current) return;                      // a decision is in flight: its result wins
       const gen = draftGenRef.current;
       const r = await draftFor(handle, chatWith);
-      if (!alive || gen !== draftGenRef.current) return;   // a decision landed meanwhile
+      if (!alive || gen !== draftGenRef.current || decidingRef.current) return;   // a decision landed meanwhile
       setTerminalDraft(r.kind === 'draft' ? r.draft : null);
       setDraftUnavailable(r.kind === 'unavailable' ? r.reason : null);
     };
@@ -618,7 +621,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   /** Send exactly the revision shown. The package answers; Buddy repeats it. */
   const sendTerminalDraft = async () => {
     if (!terminalDraft || draftDeciding) return;
-    draftGenRef.current += 1;
+    decidingRef.current = true;
     setDraftDeciding(true); setDraftOutcome(null);
     try {
       const o = await sendDraft(terminalDraft.id, terminalDraft.rev);
@@ -644,13 +647,13 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       }
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
-    } finally { setDraftDeciding(false); }
+    } finally { draftGenRef.current += 1; decidingRef.current = false; setDraftDeciding(false); }
   };
 
   /** Discard here is discard everywhere. */
   const discardTerminalDraft = async () => {
     if (!terminalDraft || draftDeciding) return;
-    draftGenRef.current += 1;
+    decidingRef.current = true;
     setDraftDeciding(true); setDraftOutcome(null);
     try {
       const o = await discardDraft(terminalDraft.id);
@@ -662,7 +665,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setDraftOutcome(o.may_have_sent ? (o.display || 'discarded — but an earlier Send may already have reached them') : 'discarded — gone from the terminal too');
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
-    } finally { setDraftDeciding(false); }
+    } finally { draftGenRef.current += 1; decidingRef.current = false; setDraftDeciding(false); }
   };
 
   /**
@@ -681,7 +684,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     // Your own unsent words are never overwritten silently (codex r2).
     if (input.trim()) { setDraftOutcome('you have unsent text in the box — send or clear it first, then Edit'); return; }
     const text = terminalDraft.message;
-    draftGenRef.current += 1;
+    decidingRef.current = true;
     setDraftDeciding(true); setDraftOutcome(null);
     // The copy is enabled ONLY once the package confirms the original is
     // cancelled (codex P1). If it refuses — a send is under way, or the store
@@ -705,7 +708,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setDraftOutcome("editing — the terminal's draft was discarded; what you send now is your own words");
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
-    } finally { setDraftDeciding(false); }
+    } finally { draftGenRef.current += 1; decidingRef.current = false; setDraftDeciding(false); }
   };
 
   const send = async (text?: string, forceUnlinked?: boolean) => {
