@@ -11,6 +11,7 @@ import { loadReturnBindings, bindingFor, answersYourAsk, answersLine, returnActi
 import { terminalSessions, frontSession } from '../lib/terminal';
 import { isFreshLastSeen } from '../lib/freshness';
 import { hasNoReadEvidence, isTestAccount } from './list/shared';
+import { draftFor, sendDraft, discardDraft, outcomeLine, type TerminalDraft } from '../lib/terminalDrafts';
 
 interface DMPanelProps {
   handle: string;
@@ -218,6 +219,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
   const [sending, setSending] = useState(false);
+  // The draft your coding agent prepared for THIS person in a terminal session,
+  // if there is one. Shown verbatim; decided here; sent only by the terminal
+  // package. Never a second sender (buddy#56 slice 2).
+  const [terminalDraft, setTerminalDraft] = useState<TerminalDraft | null>(null);
+  const [draftDeciding, setDraftDeciding] = useState(false);
+  const [draftOutcome, setDraftOutcome] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // AUTOSIZE FROM RENDERED HEIGHT, capped at four VISUAL lines (real-canary
   // UI defect): rows derived from split('\n') counted newline characters, so
@@ -577,6 +584,64 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Look for a terminal draft addressed to this person: on open, and while
+  // the conversation stays open, so a draft prepared after this panel appeared
+  // still shows up. Bound to the account: a draft never shows for another.
+  useEffect(() => {
+    let alive = true;
+    const look = async () => {
+      const r = await draftFor(handle, chatWith);
+      if (!alive) return;
+      setTerminalDraft(r.kind === 'draft' ? r.draft : null);
+    };
+    void look();
+    const t = window.setInterval(() => { void look(); }, 15_000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [handle, chatWith]);
+
+  /** Send exactly the revision shown. The package answers; Buddy repeats it. */
+  const sendTerminalDraft = async () => {
+    if (!terminalDraft || draftDeciding) return;
+    setDraftDeciding(true); setDraftOutcome(null);
+    try {
+      const o = await sendDraft(terminalDraft.id, terminalDraft.rev);
+      const { sent, line } = outcomeLine(o);
+      setDraftOutcome(sent ? `sent to @${terminalDraft.to} — exactly as shown` : line);
+      if (sent) setTerminalDraft(null);   // the thread's own poll shows the message the server serves
+    } catch (e) {
+      setDraftOutcome(e instanceof Error ? e.message : String(e));
+    } finally { setDraftDeciding(false); }
+  };
+
+  /** Discard here is discard everywhere. */
+  const discardTerminalDraft = async () => {
+    if (!terminalDraft || draftDeciding) return;
+    setDraftDeciding(true); setDraftOutcome(null);
+    try {
+      await discardDraft(terminalDraft.id);
+      setTerminalDraft(null);
+      setDraftOutcome('discarded — gone from the terminal too');
+    } catch (e) {
+      setDraftOutcome(e instanceof Error ? e.message : String(e));
+    } finally { setDraftDeciding(false); }
+  };
+
+  /**
+   * Edit here: the text moves into the ordinary composer and the terminal's
+   * draft is discarded, because the revision you approve must be the bytes
+   * you see. What you then send is an ordinary Buddy message — no digest, no
+   * agent authorship claim — which is the truth about it.
+   */
+  const editTerminalDraft = async () => {
+    if (!terminalDraft || draftDeciding) return;
+    const text = terminalDraft.message;
+    setDraftDeciding(true);
+    try { await discardDraft(terminalDraft.id); } catch { /* the store will expire it; the text is still yours */ }
+    setTerminalDraft(null); setDraftDeciding(false);
+    setInput(text);
+    setDraftOutcome("editing — the terminal's draft was discarded; what you send now is your own words");
+  };
 
   const send = async (text?: string, forceUnlinked?: boolean) => {
     const msg = text || input.trim();
@@ -1442,6 +1507,48 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           flexShrink: 0,
         }}
       >
+        {/* The terminal's draft for this person, shown exactly as the terminal
+            preview showed it. Send goes through the terminal package with the
+            revision of these bytes; Edit moves the text into the box below and
+            discards the draft; Discard is everywhere at once. Nothing here is
+            Buddy's own send. */}
+        {terminalDraft && (
+          <div
+            data-testid="terminal-draft"
+            style={{
+              marginBottom: 8,
+              padding: '8px 10px',
+              border: `1px solid ${color.line}`,
+              borderRadius: radius.md,
+              fontSize: size[12],
+            }}
+          >
+            <div style={{ color: color.dim, marginBottom: 4 }}>
+              your terminal prepared this for @{terminalDraft.to}
+              {terminalDraft.why_now ? <span> · {terminalDraft.why_now}</span> : null}
+            </div>
+            <div data-testid="terminal-draft-message" style={{ whiteSpace: 'pre-wrap', marginBottom: 6 }}>{terminalDraft.message}</div>
+            {terminalDraft.refs.length > 0 && (
+              <div style={{ color: color.dim, marginBottom: 6 }}>
+                {terminalDraft.refs.map((r) => <div key={r.url}>↗ {r.title || r.url}</div>)}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => { void sendTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                Send to @{terminalDraft.to}
+              </button>
+              <button type="button" onClick={() => { void editTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                Edit
+              </button>
+              <button type="button" onClick={() => { void discardTerminalDraft(); }} aria-disabled={draftDeciding} style={{ fontSize: size[12] }}>
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
+        {draftOutcome && (
+          <div data-testid="terminal-draft-outcome" style={{ color: color.dim, fontSize: size[12], marginBottom: 6 }}>{draftOutcome}</div>
+        )}
         {/* The chosen reply target, shown before send so the human sees which
             message this will answer — and can cancel back to an ordinary
             send. This is the ONLY thing that sets reply_to; there is no
