@@ -35,6 +35,7 @@ import DMPanel from '../src/components/DMPanel';
 import { buddyClient } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
+import { setNotificationOwner } from '../src/lib/notifications';
 
 const draft = { id: 'd1', to: 'linus', why: 'you named them', why_now: 'he asked you this morning', message: 'Which backoff curve did you land on? I kept the 3-try cap.', refs: [], reply_to: null, rev: 'abcd1234', created_at: Date.now() };
 
@@ -176,37 +177,55 @@ describe('deciding here goes through the terminal package', () => {
     expect(screen.getByTestId('terminal-draft-outcome').textContent).toMatch(/may have reached/);
   });
   it('a poll that began before a decision cannot resurrect the finished draft (codex r5)', async () => {
-    drafts = [draft];
-    await mount();
-    await screen.findByTestId('terminal-draft');
-    // Hold the NEXT list read open, then decide while it is in flight: the
-    // read captured the draft before Discard, and resolves after it.
-    let releaseList: (v: unknown) => void = () => {};
-    listDelay = new Promise((r) => { releaseList = r; });
-    const anyInvoke = (await import('@tauri-apps/api/core')).invoke;
-    const pending = anyInvoke('terminal_drafts', { me: 'ada' });   // the in-flight poll
-    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
-    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-    expect(screen.queryByTestId('terminal-draft')).toBeNull();
-    releaseList(null);
-    await pending;
-    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-    expect(screen.queryByTestId('terminal-draft')).toBeNull();
+    // The component's OWN 15s tick is what races here, so drive it with fake
+    // timers (codex r7): the earlier version only resolved the mock.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      drafts = [draft];
+      await mount();
+      await screen.findByTestId('terminal-draft');
+      let releaseList: (v: unknown) => void = () => {};
+      listDelay = new Promise((r) => { releaseList = r; });
+      const listsBefore = invoked.filter((c) => c.cmd === 'terminal_drafts').length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });   // the tick fires → look() is in flight, held open
+      expect(invoked.filter((c) => c.cmd === 'terminal_drafts').length).toBe(listsBefore + 1);
+      fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+      expect(screen.queryByTestId('terminal-draft')).toBeNull();
+      releaseList(null);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+      expect(screen.queryByTestId('terminal-draft')).toBeNull();   // the stale poll did not resurrect it
+    } finally { listDelay = null; vi.useRealTimers(); }
   });
   it('a poll that STARTS during a decision cannot overwrite it either (codex r6)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      drafts = [draft];
+      let releaseSend: (v: unknown) => void = () => {};
+      sendResult = new Promise((r) => { releaseSend = r; }) as unknown;
+      await mount();
+      fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
+      const listsBefore = invoked.filter((c) => c.cmd === 'terminal_drafts').length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });   // the tick fires DURING the send
+      expect(invoked.filter((c) => c.cmd === 'terminal_drafts').length).toBe(listsBefore);   // and does not run
+      releaseSend({ id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false });
+      await act(async () => { await vi.advanceTimersByTimeAsync(30); });
+      expect(screen.queryByTestId('terminal-draft')).toBeNull();
+    } finally { sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false }; vi.useRealTimers(); }
+  });
+  it('a receipt is recorded only for the account that sent (codex r7)', async () => {
     drafts = [draft];
+    const rec = vi.spyOn(realtime, 'recordStoredMessageWith').mockImplementation(() => {});
     let releaseSend: (v: unknown) => void = () => {};
     sendResult = new Promise((r) => { releaseSend = r; }) as unknown;
+    setNotificationOwner('ada');
     await mount();
     fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
-    // While the send is in flight, a refresh fires (the 15s tick, simulated by
-    // the same lookup the effect uses) and would see the draft still listed.
-    const listsBefore = invoked.filter((c) => c.cmd === 'terminal_drafts').length;
-    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    setNotificationOwner('bob');   // signed out and in as someone else mid-send
     releaseSend({ id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false });
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
-    expect(screen.queryByTestId('terminal-draft')).toBeNull();
-    expect(invoked.filter((c) => c.cmd === 'terminal_drafts').length).toBe(listsBefore);   // no poll ran mid-decision
+    expect(rec).not.toHaveBeenCalled();
+    setNotificationOwner('ada');
     sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
   });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {

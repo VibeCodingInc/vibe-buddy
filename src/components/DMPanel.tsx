@@ -12,6 +12,7 @@ import { terminalSessions, frontSession } from '../lib/terminal';
 import { isFreshLastSeen } from '../lib/freshness';
 import { hasNoReadEvidence, isTestAccount } from './list/shared';
 import { draftFor, sendDraft, discardDraft, outcomeLine, type TerminalDraft } from '../lib/terminalDrafts';
+import { getNotificationOwner } from '../lib/notifications';
 
 interface DMPanelProps {
   handle: string;
@@ -638,8 +639,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         // singleton to a dead conversation would disconnect the live one.
         if (incomingRef.current && mountedRef.current) realtime.openDM(chatWith, incomingRef.current);
         // The receipt outlives this panel: the thread now has a stored message
-        // even if the read-back has not landed when the person leaves (codex r3).
-        realtime.recordStoredMessageWith(chatWith);
+        // even if the read-back has not landed when the person leaves (codex r3)
+        // — but only for the account that sent it. A sign-out mid-send must not
+        // credit the next account with evidence it never earned (codex r7).
+        if ((getNotificationOwner() || '').toLowerCase() === handle.toLowerCase()) realtime.recordStoredMessageWith(chatWith);
       } else if (o.status === 'unknown' || o.unconfirmed) {
         // The fate is unknown: keep the draft on screen. Send again retries
         // exactly this text under the same key; Discard is still allowed.
@@ -1589,13 +1592,18 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               border: `1px solid ${color.line}`,
               borderRadius: radius.md,
               fontSize: size[12],
+              // The whole region scrolls inside a bound, so refs, warnings and
+              // the three controls can never be pushed out of a 300×400 window
+              // (codex r7): the controls are the point of showing the draft.
+              maxHeight: '45vh',
+              overflowY: 'auto',
             }}
           >
             <div style={{ color: color.dim, marginBottom: 4 }}>
               your terminal prepared this for @{terminalDraft.to}
               {terminalDraft.why_now ? <span> · {terminalDraft.why_now}</span> : null}
             </div>
-            <div data-testid="terminal-draft-message" style={{ whiteSpace: 'pre-wrap', marginBottom: 6, maxHeight: 160, overflowY: 'auto' }}>{terminalDraft.message}</div>
+            <div data-testid="terminal-draft-message" style={{ whiteSpace: 'pre-wrap', marginBottom: 6 }}>{terminalDraft.message}</div>
             {terminalDraft.unconfirmed && (
               <div style={{ color: color.dim, marginBottom: 6 }}>the last Send did not confirm — Send again retries exactly this text, once</div>
             )}
