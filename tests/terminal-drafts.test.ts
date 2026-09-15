@@ -4,7 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const calls: Array<{ cmd: string; args: unknown }> = [];
 let listResult: unknown = { handle: 'ada', drafts: [], error: null, message: null };
-let sendResult: unknown = { id: 'd1', sent: true, message_id: 'msg_1', status: 'sent', display: null, definite: null };
+let sendResult: unknown = { id: 'd1', sent: true, message_id: 'msg_1', status: 'sent', display: null, definite: false };
 let throwOn: string | null = null;
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (cmd: string, args: unknown) => {
@@ -12,7 +12,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (throwOn === cmd) throw new Error('the terminal package is not installed here');
     if (cmd === 'terminal_drafts') return listResult;
     if (cmd === 'send_terminal_draft') return sendResult;
-    if (cmd === 'discard_terminal_draft') return { id: (args as { id: string }).id, status: 'cancelled', display: null };
+    if (cmd === 'discard_terminal_draft') return { id: (args as { id: string }).id, status: 'cancelled', cancelled: true, display: null };
     return null;
   },
 }));
@@ -57,8 +57,8 @@ describe('deciding goes through the package', () => {
     expect(calls).toEqual([{ cmd: 'send_terminal_draft', args: { id: 'd1', rev: 'abcd1234' } }]);
   });
   it('"sent" is only the package\'s word; a refusal is shown in the package\'s words and the draft stays', () => {
-    expect(outcomeLine({ id: 'd1', sent: true, message_id: 'm', status: 'sent', display: null, definite: null }).sent).toBe(true);
-    const refused = outcomeLine({ id: 'd1', sent: false, message_id: null, status: 'previewed', display: 'Draft d1 changed since that preview (rev abcd1234 → 9999ffff) — open it again.', definite: null });
+    expect(outcomeLine({ id: 'd1', sent: true, message_id: 'm', status: 'sent', display: null, definite: false }).sent).toBe(true);
+    const refused = outcomeLine({ id: 'd1', sent: false, message_id: null, status: 'previewed', display: 'Draft d1 changed since that preview (rev abcd1234 → 9999ffff) — open it again.', definite: true });
     expect(refused.sent).toBe(false);
     expect(refused.line).toMatch(/changed since that preview/);
   });

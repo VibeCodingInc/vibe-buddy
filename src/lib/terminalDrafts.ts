@@ -27,11 +27,14 @@ export interface TerminalDraft {
   reply_to: string | null;
   rev: string;
   created_at: number | null;
+  /** 'previewed' (decidable) or 'unknown' (a send whose fate is unconfirmed). */
+  status?: string | null;
+  unconfirmed?: boolean;
 }
 
 export interface DraftList { handle: string | null; drafts: TerminalDraft[]; error: string | null; message: string | null }
-export interface SendOutcome { id: string; sent: boolean; message_id: string | null; status: string | null; display: string | null; definite: string | null }
-export interface DiscardOutcome { id: string; status: string | null; display: string | null }
+export interface SendOutcome { id: string; sent: boolean; message_id: string | null; status: string | null; display: string | null; definite: boolean; unconfirmed?: boolean }
+export interface DiscardOutcome { id: string; status: string | null; cancelled: boolean; display: string | null }
 
 export type DraftAvailability =
   | { kind: 'draft'; draft: TerminalDraft }

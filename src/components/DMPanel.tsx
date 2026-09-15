@@ -608,7 +608,14 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       const o = await sendDraft(terminalDraft.id, terminalDraft.rev);
       const { sent, line } = outcomeLine(o);
       setDraftOutcome(sent ? `sent to @${terminalDraft.to} — exactly as shown` : line);
-      if (sent) setTerminalDraft(null);   // the thread's own poll shows the message the server serves
+      if (sent) {
+        setTerminalDraft(null);
+        setPollArmed(true);   // a first message into an empty thread must be read back, too (codex P2)
+      } else if (o.status === 'unknown' || o.unconfirmed) {
+        // The fate is unknown: keep the draft on screen. Send again retries
+        // exactly this text under the same key; Discard is still allowed.
+        setTerminalDraft({ ...terminalDraft, status: 'unknown', unconfirmed: true });
+      }
     } catch (e) {
       setDraftOutcome(e instanceof Error ? e.message : String(e));
     } finally { setDraftDeciding(false); }
@@ -619,7 +626,8 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     if (!terminalDraft || draftDeciding) return;
     setDraftDeciding(true); setDraftOutcome(null);
     try {
-      await discardDraft(terminalDraft.id);
+      const o = await discardDraft(terminalDraft.id);
+      if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it'); return; }
       setTerminalDraft(null);
       setDraftOutcome('discarded — gone from the terminal too');
     } catch (e) {
@@ -636,11 +644,20 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   const editTerminalDraft = async () => {
     if (!terminalDraft || draftDeciding) return;
     const text = terminalDraft.message;
-    setDraftDeciding(true);
-    try { await discardDraft(terminalDraft.id); } catch { /* the store will expire it; the text is still yours */ }
-    setTerminalDraft(null); setDraftDeciding(false);
-    setInput(text);
-    setDraftOutcome("editing — the terminal's draft was discarded; what you send now is your own words");
+    setDraftDeciding(true); setDraftOutcome(null);
+    // The copy is enabled ONLY once the package confirms the original is
+    // cancelled (codex P1). If it refuses — a send is under way, or the store
+    // could not be written — the draft stays as it is and nothing is copied:
+    // an editable copy beside a live original is two sendable versions.
+    try {
+      const o = await discardDraft(terminalDraft.id);
+      if (!o.cancelled) { setDraftOutcome(o.display || 'the terminal would not discard it, so nothing was copied'); return; }
+      setTerminalDraft(null);
+      setInput(text);
+      setDraftOutcome("editing — the terminal's draft was discarded; what you send now is your own words");
+    } catch (e) {
+      setDraftOutcome(e instanceof Error ? e.message : String(e));
+    } finally { setDraftDeciding(false); }
   };
 
   const send = async (text?: string, forceUnlinked?: boolean) => {
@@ -1527,7 +1544,10 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               your terminal prepared this for @{terminalDraft.to}
               {terminalDraft.why_now ? <span> · {terminalDraft.why_now}</span> : null}
             </div>
-            <div data-testid="terminal-draft-message" style={{ whiteSpace: 'pre-wrap', marginBottom: 6 }}>{terminalDraft.message}</div>
+            <div data-testid="terminal-draft-message" style={{ whiteSpace: 'pre-wrap', marginBottom: 6, maxHeight: 160, overflowY: 'auto' }}>{terminalDraft.message}</div>
+            {terminalDraft.unconfirmed && (
+              <div style={{ color: color.dim, marginBottom: 6 }}>the last Send did not confirm — Send again retries exactly this text, once</div>
+            )}
             {terminalDraft.refs.length > 0 && (
               <div style={{ color: color.dim, marginBottom: 6 }}>
                 {terminalDraft.refs.map((r) => <div key={r.url}>↗ {r.title || r.url}</div>)}

@@ -36,6 +36,11 @@ pub struct TerminalDraft {
     /// The preview revision. A send must name it; the package refuses any other.
     pub rev: String,
     pub created_at: Option<u64>,
+    /// 'previewed' (decidable) or 'unknown' (a send whose fate is unconfirmed).
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub unconfirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,21 +60,38 @@ pub struct SendOutcome {
     pub status: Option<String>,
     /// The package's own sentence about what happened — shown as-is.
     pub display: Option<String>,
-    pub definite: Option<String>,
+    /// True when the refusal provably happened before any write (nothing sent).
+    #[serde(default)]
+    pub definite: bool,
+    /// True when an earlier attempt may have committed: Send again retries
+    /// exactly this text; Buddy must keep the draft reachable.
+    #[serde(default)]
+    pub unconfirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscardOutcome {
     pub id: String,
     pub status: Option<String>,
+    /// The package's word that the stored row is now cancelled. Only this
+    /// permits Buddy to treat the draft as gone.
+    #[serde(default)]
+    pub cancelled: bool,
     pub display: Option<String>,
 }
 
-/// The installed package's draft CLI, or None. Newest pinned version wins.
+/// Semantic version as a comparable tuple; anything unparseable sorts lowest.
+fn semver(v: &str) -> (u64, u64, u64) {
+    let mut it = v.trim().trim_start_matches('v').split(|c| c == '.' || c == '-').map(|p| p.parse::<u64>().unwrap_or(0));
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+/// The installed package's draft CLI, or None. Newest pinned version wins,
+/// compared as a version, not as a string (0.8.10 > 0.8.9).
 fn draft_cli() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let npx = home.join(".npm").join("_npx");
-    let mut best: Option<(String, PathBuf)> = None;
+    let mut best: Option<((u64, u64, u64), PathBuf)> = None;
     for entry in std::fs::read_dir(&npx).ok()?.flatten() {
         let pkg = entry.path().join("node_modules").join("slashvibe-mcp");
         let cli = pkg.join("draft-cli.js");
@@ -78,22 +100,23 @@ fn draft_cli() -> Option<PathBuf> {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v.get("version").and_then(|x| x.as_str()).map(String::from))
             .unwrap_or_default();
-        if best.as_ref().map(|(v, _)| version > *v).unwrap_or(true) { best = Some((version, cli)); }
+        let sv = semver(&version);
+        if best.as_ref().map(|(v, _)| sv > *v).unwrap_or(true) { best = Some((sv, cli)); }
     }
     best.map(|(_, p)| p)
 }
 
-fn node() -> String {
-    for c in ["/opt/homebrew/bin/node", "/usr/local/bin/node"] {
-        if std::path::Path::new(c).exists() { return c.to_string(); }
-    }
-    "node".to_string()
+/// The same Finder-safe Node resolver the vibeconf bridge uses: a Buddy
+/// launched from Finder inherits no shell PATH, so Homebrew, nvm, Volta and
+/// asdf installs are all looked up explicitly.
+fn node() -> Result<PathBuf, String> {
+    crate::vibeconf::node_binary().ok_or_else(|| "no Node runtime found on this machine".to_string())
 }
 
 /// Run one verb. The CLI prints exactly one JSON object on stdout; stderr is logs.
 fn run(args: &[&str]) -> Result<serde_json::Value, String> {
     let cli = draft_cli().ok_or_else(|| "the terminal package is not installed here".to_string())?;
-    let out = Command::new(node()).arg(&cli).args(args).output().map_err(|e| format!("could not run the terminal package: {e}"))?;
+    let out = Command::new(node()?).arg(&cli).args(args).output().map_err(|e| format!("could not run the terminal package: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| "the terminal package gave no answer".to_string())?;
     serde_json::from_str(line).map_err(|e| format!("could not read the terminal package's answer: {e}"))
@@ -129,4 +152,17 @@ pub async fn discard_terminal_draft(id: String) -> Result<DiscardOutcome, String
         let v = run(&["discard", &id])?;
         serde_json::from_value(v).map_err(|e| e.to_string())
     }).await.map_err(|e| format!("worker died: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::semver;
+    #[test]
+    fn newest_is_a_version_not_a_string() {
+        assert!(semver("0.8.10") > semver("0.8.9"));
+        assert!(semver("0.10.0") > semver("0.9.0"));
+        assert!(semver("0.8.100") > semver("0.8.99"));
+        assert!(semver("v1.0.0") > semver("0.99.99"));
+        assert_eq!(semver("garbage"), (0, 0, 0));
+    }
 }
