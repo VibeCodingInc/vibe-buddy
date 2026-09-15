@@ -1586,6 +1586,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
             revision of these bytes; Edit moves the text into the box below and
             discards the draft; Discard is everywhere at once. Nothing here is
             Buddy's own send. */}
+        {/* Everything the terminal draft adds above the composer — the draft,
+            its outcome line, or the unavailable line — lives in ONE bounded,
+            scrolling region (codex r7/r9), so at 300×400 the ordinary composer
+            below is never pushed out of the window by any combination of them. */}
+        {(terminalDraft || draftOutcome || (!terminalDraft && draftUnavailable)) && (
+        <div data-testid="terminal-draft-region" style={{ maxHeight: '40vh', overflowY: 'auto', marginBottom: 8 }}>
         {terminalDraft && (
           <div
             data-testid="terminal-draft"
@@ -1595,11 +1601,6 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               border: `1px solid ${color.line}`,
               borderRadius: radius.md,
               fontSize: size[12],
-              // The whole region scrolls inside a bound, so refs, warnings and
-              // the three controls can never be pushed out of a 300×400 window
-              // (codex r7): the controls are the point of showing the draft.
-              maxHeight: '45vh',
-              overflowY: 'auto',
             }}
           >
             <div style={{ color: color.dim, marginBottom: 4 }}>
@@ -1635,6 +1636,8 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         )}
         {!terminalDraft && draftUnavailable && (
           <div data-testid="terminal-draft-unavailable" style={{ color: color.faint, fontSize: size[11], marginBottom: 6 }}>terminal drafts unavailable: {draftUnavailable}</div>
+        )}
+        </div>
         )}
         {/* The chosen reply target, shown before send so the human sees which
             message this will answer — and can cancel back to an ordinary

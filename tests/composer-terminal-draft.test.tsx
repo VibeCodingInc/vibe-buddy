@@ -237,6 +237,19 @@ describe('deciding here goes through the terminal package', () => {
     expect((await screen.findByTestId('terminal-draft-outcome')).textContent).toMatch(/could not save the local return note/);
     sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
   });
+  it('the draft, its outcome and the unavailable line all live inside one bounded region (codex r9)', async () => {
+    drafts = [draft];
+    sendResult = { id: 'd1', sent: false, message_id: null, status: 'unknown', unconfirmed: true, display: 'Couldn\'t confirm the send.', definite: false };
+    await mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to @linus' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    const region = screen.getByTestId('terminal-draft-region');
+    expect(region.style.maxHeight).toBe('40vh');
+    expect(region.style.overflowY).toBe('auto');
+    expect(region.contains(screen.getByTestId('terminal-draft'))).toBe(true);
+    expect(region.contains(screen.getByTestId('terminal-draft-outcome'))).toBe(true);
+    sendResult = { id: 'd1', sent: true, message_id: 'msg_9', status: 'sent', display: null, definite: false };
+  });
   it('Edit copies NOTHING unless the package confirms the original is cancelled (codex P1)', async () => {
     drafts = [draft];
     discardResult = { cancelled: false, display: 'Draft d1 is being sent right now — it can\'t be cancelled.' };
