@@ -13,6 +13,7 @@ mod transcript;
 mod notify;
 mod mind;
 mod work;
+mod drafts;
 
 use auth::{AuthResult, AuthStatus};
 use context_extractor::CodingDNA;
@@ -610,6 +611,9 @@ fn main() {
             terminal::front_terminal_session,
             terminal::place_in_terminal_session,
             work::read_return_bindings,
+            drafts::terminal_drafts,
+            drafts::send_terminal_draft,
+            drafts::discard_terminal_draft,
             work::reveal_in_finder,
             transcript::transcript_signal,
             mind::mind_prime,
