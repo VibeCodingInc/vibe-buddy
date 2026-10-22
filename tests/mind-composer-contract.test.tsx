@@ -663,6 +663,10 @@ describe('send path — traced, honest about failure, Mind-free', () => {
     await act(async () => { fireEvent.click(retryBtn); });
     expect(sent).toHaveLength(2);
     expect(sent[1].content).toBe(LONG_FLAT); // retry re-sends the same bytes
+    // Retry is traced exactly like send (isolated-canary gap, 2026-08-28):
+    const stored = traces('send_result').filter((c) => c[1]?.class === 'stored');
+    expect(stored).toHaveLength(1);
+    expect(stored[0][1]).toMatchObject({ mid: 'msg_pin2' });
   });
 
   it('a quick send makes ZERO Mind requests and never waits on one', async () => {
