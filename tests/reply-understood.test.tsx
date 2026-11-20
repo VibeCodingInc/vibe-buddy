@@ -33,7 +33,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { buddyClient, type VibeMessage } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
@@ -48,6 +48,7 @@ const tab = (over: Record<string, unknown> = {}) => ({ window_id: '1', tty: '/de
 const theBinding = { handle: THEM, from: ME, project: 'payments', messageId: 'msg_q', firstLine: asked.content, cwd: CWD, sentAt: 1 };
 
 beforeEach(() => {
+  clearUnresolvedAttempts();
   invoked.length = 0; bindings = []; sessions = []; frontOk = true; revealError = null; scanWarnings = []; memStore.clear(); resetReturnBindings();
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});

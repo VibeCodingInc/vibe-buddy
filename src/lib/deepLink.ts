@@ -25,8 +25,14 @@ export function routeDeepLink(url: string): DeepLinkRoute {
   if (host === 't' && segs.length === 1 && /^[A-Za-z0-9_-]{1,64}$/.test(segs[0])) {
     return { kind: 'thread', threadId: segs[0] };
   }
-  if (host === 'dm' && segs.length === 1 && /^[a-z0-9][a-z0-9_-]{0,38}$/i.test(segs[0])) {
-    return { kind: 'dm', handle: segs[0].toLowerCase() };
+  if (host === 'dm' && segs.length === 1) {
+    // Trimmed, leading @ removed, lowercased — the same cleaning as a typed
+    // handle. The spelling ('-' vs '_') is not touched here: the platform's
+    // identity answer decides that (App resolves before opening).
+    let seg: string;
+    try { seg = decodeURIComponent(segs[0]); } catch { return null; }
+    const handle = seg.trim().replace(/^@+/, '').trim().toLowerCase();
+    if (/^[a-z0-9][a-z0-9_-]{0,38}$/.test(handle)) return { kind: 'dm', handle };
   }
   return null;
 }

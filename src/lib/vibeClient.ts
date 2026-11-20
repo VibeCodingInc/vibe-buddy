@@ -188,7 +188,26 @@ export interface VibeMessage {
   to: string;
   content: string;
   timestamp: string;
-  status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+  /**
+   * 'failed'  — the server refused before any write: definitely not stored.
+   * 'unknown' — no readable answer (timeout, transport error, an unreadable
+   *             2xx): it may or may not have been stored. Never shown as Failed.
+   */
+  status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed' | 'unknown';
+  /**
+   * LOCAL send attempts only. The idempotency key minted with the optimistic
+   * message and reused by every Retry of it, so a retry after an unknown
+   * outcome can never store a second copy. And the recipient spelling that
+   * attempt was addressed to — a retry addresses exactly the same row.
+   */
+  idempotencyKey?: string;
+  sendTo?: string;
+  /** The server's id from a stored receipt — reconciles the local bubble by id. */
+  storedId?: string;
+  /** When the latest attempt (first send or a retry) went out. */
+  attemptAt?: string;
+  /** The reply target this attempt carried, so a retry is the identical request. */
+  attemptReplyTo?: string;
   /**
    * SERVED message kind (platform#272 seam): set if and only if the wire
    * payload carried kind='announcement' AND generated_by='platform'
@@ -313,6 +332,96 @@ export interface LiveSession {
   guestEnabled?: boolean;
 }
 
+
+// ── SEND TRUTH ───────────────────────────────────────────────────────────
+// Three outcomes, never two. 'stored' needs a receipt in the reply
+// (success === true, or the stored message's id). 'refused' is a 4xx: the
+// server answered and wrote nothing. Everything else — a timeout, a transport
+// error, a 5xx, a 2xx whose body could not be read or carried no receipt —
+// is 'unknown': the write may have happened. Only an idempotency key makes
+// retrying an unknown safe, so every send carries one.
+export type SendOutcome = 'stored' | 'refused' | 'unknown';
+
+export interface SendResult {
+  ok: boolean;
+  /** Absent only on results built by older callers/tests: derived by sendOutcomeOf. */
+  outcome?: SendOutcome;
+  error?: string;
+  id?: string;
+  storedLength?: number;
+}
+
+/** The outcome of a result, for results that predate the outcome field. */
+export function sendOutcomeOf(r: SendResult): SendOutcome {
+  if (r.outcome) return r.outcome;
+  if (r.ok) return 'stored';
+  return r.error ? 'refused' : 'unknown';
+}
+
+/**
+ * Pure classifier for one POST /api/messages reply. `data` is the parsed body
+ * or undefined when the body was not JSON.
+ */
+export function classifySendResponse(status: number, data: unknown): SendResult {
+  const obj = data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>) : null;
+  const error = obj && typeof obj.error === 'string' && obj.error ? obj.error : undefined;
+  if (status >= 200 && status < 300) {
+    const msg = obj && obj.message && typeof obj.message === 'object' ? (obj.message as Record<string, unknown>) : null;
+    const id = msg && typeof msg.id === 'string' && msg.id ? msg.id : undefined;
+    if (obj && (obj.success === true || id)) {
+      const storedLength = typeof obj.storedLength === 'number' ? obj.storedLength : undefined;
+      return { ok: true, outcome: 'stored', id, storedLength };
+    }
+    // A 2xx with no receipt: the server may have written it. Not stored, not failed.
+    return { ok: false, outcome: 'unknown', error };
+  }
+  // 408 is a timeout reported by an intermediary: the origin may have written it.
+  if (status >= 400 && status < 500 && status !== 408) {
+    return { ok: false, outcome: 'refused', error: error ?? `http_${status}` };
+  }
+  return { ok: false, outcome: 'unknown', error };
+}
+
+/** A fresh opaque idempotency key (the platform accepts 1–200 chars, trimmed). */
+export function newIdempotencyKey(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `buddy-${crypto.randomUUID()}`;
+    }
+  } catch { /* fall through */ }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `buddy-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * A handle as a person typed or a link carried it: trimmed, leading @ signs
+ * removed, lowercased. Spelling ('-' vs '_') is NOT changed here — only the
+ * platform's identity answer may change that (resolveRecipient).
+ */
+export function cleanHandle(raw: string | null | undefined): string {
+  return String(raw ?? '').trim().replace(/^@+/, '').trim().toLowerCase();
+}
+
+const RECIPIENT_GRAMMAR = /^[a-z0-9][a-z0-9_-]{1,38}$/;
+/** Same account, written with '-' or '_' (the one difference the platform folds). */
+export const sameAccountSpelling = (a: string, b: string): boolean =>
+  a.replace(/-/g, '_') === b.replace(/-/g, '_');
+
+export type RecipientLookup = { found: true; handle: string } | { found: false } | { found: null };
+
+/**
+ * Pure decision, mirroring slashvibe-mcp invite.resolveRecipient: the
+ * platform's spelling is adopted only when the lookup FOUND the account under
+ * a spelling that differs from what was typed by '-'/'_' alone. Any other
+ * answer — absent, unclear, offline, a different account — keeps the typed form.
+ */
+export function chooseRecipient(typed: string, who: RecipientLookup): string {
+  if (!typed.includes('-')) return typed;
+  if (who.found !== true) return typed;
+  const theirs = who.handle;
+  return theirs && theirs !== typed && sameAccountSpelling(typed, theirs) && RECIPIENT_GRAMMAR.test(theirs) ? theirs : typed;
+}
 
 /** GitHub-login normalization mirroring the server: trim, lowercase, strip one leading @. */
 export function normalizeGithub(raw: string | null | undefined): string {
@@ -643,6 +752,13 @@ class BuddyClient {
     url: string;
     body?: any;
     extraHeaders?: Record<string, string>;
+    /**
+     * A body that is not JSON resolves with data undefined instead of
+     * throwing — so a send can tell "the server answered, unreadably" (the
+     * write may have happened) from a transport failure. Off by default:
+     * every other caller keeps its existing throw→catch behaviour.
+     */
+    tolerateUnreadable?: boolean;
   }): Promise<{ ok: boolean; data: any; status: number }> {
     const doRequest = async () => {
       const headers: Record<string, string> = {
@@ -661,6 +777,11 @@ class BuddyClient {
       }
 
       const response = await tauriFetch(options.url, withTimeout(fetchOptions));
+      if (options.tolerateUnreadable) {
+        let data: any;
+        try { data = JSON.parse(await response.text()); } catch { data = undefined; }
+        return { ok: response.ok, data, status: response.status };
+      }
       const data = await response.json();
       return { ok: response.ok, data, status: response.status };
     };
@@ -1243,8 +1364,52 @@ class BuddyClient {
     }
   }
 
-  async sendMessage(to: string, content: string, replyTo?: string): Promise<boolean> {
-    return (await this.sendMessageResult(to, content, replyTo)).ok;
+  async sendMessage(to: string, content: string, replyTo?: string, opts?: { idempotencyKey?: string }): Promise<boolean> {
+    return (await this.sendMessageResult(to, content, replyTo, opts)).ok;
+  }
+
+  // Found spellings only; a failure is never cached (the next send asks again).
+  private recipientSpelling = new Map<string, string>();
+
+  /**
+   * GET /api/identity/:handle (public, unauthenticated) for a handle written
+   * with '-'. { found: false } only on a definite 404; anything unclear is
+   * { found: null }. The answer must be the same account by '-'/'_' alone.
+   */
+  async lookupRecipient(typed: string): Promise<RecipientLookup> {
+    try {
+      const response = await tauriFetch(`${API_URL}/identity/${encodeURIComponent(typed)}`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (response.status === 404) return { found: false };
+      if (!response.ok) return { found: null };
+      let who: any;
+      try { who = JSON.parse(await response.text()); } catch { return { found: null }; }
+      const handle = who && typeof who.handle === 'string' ? who.handle.trim().toLowerCase() : '';
+      if (!handle || !sameAccountSpelling(typed, handle)) return { found: null };
+      return { found: true, handle };
+    } catch {
+      return { found: null };
+    }
+  }
+
+  /**
+   * The handle to address. Cleaned (trim, leading @, case) always; for a
+   * handle with '-', the platform's own spelling when its identity lookup
+   * finds the same account under '_' (a GitHub login a-b is the handle a_b,
+   * and a message to a-b is stored where a_b never reads). No '-', no request.
+   */
+  async resolveRecipient(raw: string): Promise<string> {
+    const typed = cleanHandle(raw);
+    if (!typed.includes('-')) return typed;
+    const known = this.recipientSpelling.get(typed);
+    if (known) return known;
+    const who = await this.lookupRecipient(typed);
+    const chosen = chooseRecipient(typed, who);
+    if (who.found === true) this.recipientSpelling.set(typed, chosen);
+    return chosen;
   }
 
   /**
@@ -1258,15 +1423,24 @@ class BuddyClient {
   async sendMessageResult(
     to: string,
     content: string,
-    replyTo?: string
-  ): Promise<{ ok: boolean; error?: string; id?: string; storedLength?: number }> {
-    if (!this.handle) return { ok: false };
+    replyTo?: string,
+    opts?: { idempotencyKey?: string }
+  ): Promise<SendResult> {
+    // Not signed in: nothing left the machine.
+    if (!this.handle) return { ok: false, outcome: 'refused', error: 'not_signed_in' };
 
+    // One key per attempt-identity. POST /api/messages hands the same request
+    // to /api/v2/messages, which honours the Idempotency-Key header: a replay
+    // with the same key and the same message returns the stored row instead
+    // of writing a second one. The key also rides authenticatedRequest's own
+    // 401→refresh→resend, so that inner resend is covered too.
+    const idempotencyKey = opts?.idempotencyKey || newIdempotencyKey();
     try {
-      const { ok, data } = await this.authenticatedRequest({
+      const { status, data } = await this.authenticatedRequest({
         method: 'POST',
         url: `${API_URL}/messages`,
-        extraHeaders: { 'X-Vibe-Client': 'buddy' },
+        extraHeaders: { 'X-Vibe-Client': 'buddy', 'Idempotency-Key': idempotencyKey },
+        tolerateUnreadable: true,
         body: {
           from: this.handle,
           to,
@@ -1280,25 +1454,13 @@ class BuddyClient {
         },
       });
 
-      if (ok) {
-        // The stored-message receipt: the server's own id for the row it
-        // wrote, plus how many chars it stored — the evidence a send trace
-        // and a read-back verification hang off (P0 send diagnosis).
-        const msg = (data as { message?: { id?: unknown } } | null)?.message;
-        const id = msg && typeof msg.id === 'string' ? msg.id : undefined;
-        const storedLength =
-          data && typeof (data as { storedLength?: unknown }).storedLength === 'number'
-            ? (data as { storedLength: number }).storedLength
-            : undefined;
-        return { ok: true, id, storedLength };
-      }
-      const error = data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
-        ? (data as { error: string }).error
-        : undefined;
-      return { ok: false, error };
+      // The stored-message receipt (server id + stored length) is what the
+      // send trace and read-back hang off; without one, a 2xx is 'unknown'.
+      return classifySendResponse(status, data);
     } catch (e) {
+      // Timeout or transport error: the request may have reached the server.
       console.warn('sendMessage error:', e);
-      return { ok: false };
+      return { ok: false, outcome: 'unknown' };
     }
   }
 
