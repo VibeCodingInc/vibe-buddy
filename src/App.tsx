@@ -6,7 +6,9 @@ import { getCodingDNA, dnaToPresencePayload } from './lib/contextExtractor';
 import { getPresencePrefs, setPresencePrefs, subscribePresencePrefs, type PresencePrefs, type PresenceBroadcast, type OfflineRetraction } from './lib/presencePrefs';
 import { readSignals, wantsYou, signalLine, transcriptJoinable, type SessionSignal } from './lib/transcript';
 import { checkSessionAlerts, resetSessionAlertState, setNotificationOwner } from './lib/notifications';
+import { setUnreadEvidence } from './lib/notifications';
 import { routeDeepLink } from './lib/deepLink';
+import { watchReach, loadReach, subscribeReach, getReachState, type ReachState } from './lib/reach';
 import { onOpenUrl, getCurrent as getCurrentDeepLink } from '@tauri-apps/plugin-deep-link';
 import { listen } from '@tauri-apps/api/event';
 import { resetArrivals } from './lib/notifications';
@@ -35,6 +37,8 @@ import { color, font, size, space, radius } from './lib/tokens';
 import { resetNotificationState } from './lib/notifications';
 import { resetProactiveState } from './lib/intelligence';
 import { copyText } from './lib/clipboard';
+import { setupLine, SETUP_COMMAND } from './lib/setupLine';
+import { trayCounts } from './lib/trayStatus';
 import { ReportProblem } from './components/ReportProblem';
 import {
   installConsoleCapture,
@@ -203,9 +207,10 @@ const WAKE_GAP_MS = 120_000;
 
 type McpStatus = {
   installed: boolean;
+  server?: boolean;
+  hooks?: boolean;
   npx_available: boolean;
   config_path: string | null;
-  hosts?: string[]; // agents with /vibe configured: Claude Code, Codex, Cursor
 };
 
 type View =
@@ -268,6 +273,9 @@ export default function App() {
   // last-known online count (the list retains its rows), not drop to a false
   // zero — and the poll closure cannot see the current `users` state value.
   const usersRef = useRef<VibeUser[]>([]);
+  // When each read last succeeded — the tray's evidence clock (trayStatus.ts).
+  const presenceGoodAtRef = useRef<number | null>(null);
+  const threadsGoodAtRef = useRef<number | null>(null);
   usersRef.current = users;
   const [compact, setCompact] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -316,11 +324,18 @@ export default function App() {
   // says exactly that instead of claiming a sync at startup (codex G6 P1).
   const [lastSyncSuccessAt, setLastSyncSuccessAt] = useState<number | null>(null);
 
-  // Check MCP status after login
+  // Is /vibe set up in Claude Code? READ-ONLY: Buddy no longer installs
+  // anything; when it is missing, the banner shows the one real command.
+  // Re-checked when Buddy regains focus, so running setup in a terminal and
+  // coming back clears the line without a restart.
   useEffect(() => {
     if (!handle) return;
-    invoke<McpStatus>('check_mcp_status').then(setMcpStatus).catch(() => {});
+    const check = () => { invoke<McpStatus>('check_mcp_status').then(setMcpStatus).catch(() => {}); };
+    check();
+    window.addEventListener('focus', check);
+    return () => window.removeEventListener('focus', check);
   }, [handle]);
+  const [setupCopy, setSetupCopy] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   // THE deep-link entry path (#320): a redemption lands at /t/{thread_id},
   // and the recipient finishes INSIDE that thread — vibe://t/{id} resolves
@@ -488,18 +503,17 @@ export default function App() {
     // captured errors (which can carry A-specific text) must not surface in
     // account B's report after a sign-out/sign-in without restart (codex G6 R4).
     clearBreadcrumbs();
-    invoke('set_tray_status', { online: 0, unread: 0 }).catch(() => {});
+    // Signed out: no counts at all, and the next account's evidence clock
+    // starts from nothing.
+    presenceGoodAtRef.current = null;
+    threadsGoodAtRef.current = null;
+    invoke('set_tray_status', { online: null, unread: null, signedOut: true }).catch(() => {});
     invoke('set_dock_badge', { count: 0 }).catch(() => {});
   }, []);
 
-  const handleRetryMcp = useCallback(async () => {
-    try {
-      const result = await invoke<{ success: boolean; message: string }>('install_mcp');
-      if (result.success) {
-        const status = await invoke<McpStatus>('check_mcp_status');
-        setMcpStatus(status);
-      }
-    } catch (e) { console.warn('MCP retry error:', e); }
+  const copySetupCommand = useCallback(async () => {
+    setSetupCopy((await copyText(SETUP_COMMAND)) ? 'copied' : 'failed');
+    setTimeout(() => setSetupCopy('idle'), 4000);
   }, []);
 
   // Auto-dismiss MCP banner after 10s if installed
@@ -644,22 +658,28 @@ export default function App() {
       setMySessionsProbe(nextMySessionsProbe(mySessionsResult.error));
 
       // The menu-bar glance. Buddy lives in the tray all day, so the tray
-      // itself should answer "is anything happening?" without being opened —
-      // that ambient read is what makes this a buddy list rather than a window.
-      const unread = threadResult.error
-        ? threadsRef.current.reduce((sum, t) => sum + (t.unread || 0), 0)
-        : threadResult.threads.reduce((sum, t) => sum + (t.unread || 0), 0);
-      // Mirror `unread` above: a failed presence read keeps the last-known
-      // online count from the RETAINED roster (which the list still shows),
-      // never a false zero. The count is the platform's own `active` status —
-      // the same thing the Online SECTION counts — because the platform owns
-      // presence and Buddy must not redefine it locally (AGENTS.md); the green
-      // DOT's tighter freshness is a colour rule, not a headcount. Staleness
-      // through an outage is carried by the list's "reconnecting · last synced"
-      // copy, exactly as it is for the retained unread count.
-      const roster = presenceData.error ? usersRef.current : presenceData.users;
-      const online = roster.filter((u) => u.status === 'active' && u.handle !== handle).length;
+      // itself should answer "is anything happening?" without being opened.
+      // But the tray and the Dock badge have no "reconnecting" line beside
+      // them: a count is shown only while its read is fresh (the list's own
+      // STALE_AFTER_MS grace), and past that it is UNKNOWN — never the last
+      // value, never zero (trayStatus.ts). The online count is the platform's
+      // own `active` status, the same thing the Online section counts.
+      const now = Date.now();
+      if (!presenceData.error) presenceGoodAtRef.current = now;
+      if (!threadResult.error) threadsGoodAtRef.current = now;
+      const { online, unread } = trayCounts({
+        now,
+        me: handle,
+        users: presenceData.error ? null : presenceData.users,
+        threads: threadResult.error ? null : threadResult.threads,
+        retainedUsers: usersRef.current,
+        retainedThreads: threadsRef.current,
+        presenceGoodAt: presenceGoodAtRef.current,
+        threadsGoodAt: threadsGoodAtRef.current,
+        staleAfterMs: STALE_AFTER_MS,
+      });
       invoke('set_tray_status', { online, unread }).catch(() => {});
+      setUnreadEvidence(unread !== null);
     });
     fetchAllRef.current = fetchAll;
     fetchAll();
@@ -811,6 +831,14 @@ export default function App() {
       // Invisible: send nothing. Presence is TTL-based on last_seen, so going
       // quiet fades the dot to away/offline on its own — no retraction needed.
       if (!prefs.sharing) return;
+      // The terminal's `npx slashvibe-mcp invisible` (reach.json) means this
+      // machine stops saying "I am here" — Buddy included. Read fresh at every
+      // beat, so no beat can go out on a stale answer. Like the terminal, no
+      // retraction: the last beat fades within the freshness window.
+      if ((await loadReach()).invisible) {
+        setMyBroadcast(null);
+        return;
+      }
       const dna = prefs.detail === 'full' ? await getCodingDNA() : null;
       const payload: {
         workingOn?: string;
@@ -836,6 +864,14 @@ export default function App() {
         sentAt: Date.now(),
       });
     };
+
+    // The terminal's invisible flag, flipped by a command typed elsewhere:
+    // off → announce now instead of at the next 5-minute beat; on → stop
+    // claiming a broadcast at once.
+    const unsubReach = subscribeReach((next, prev) => {
+      if (next.invisible) setMyBroadcast(null);
+      else if (prev.invisible) void sendHeartbeat();
+    });
 
     // A pref flip should take effect now, not at the next 5-minute beat:
     // going visible (or changing status/detail) re-announces immediately;
@@ -927,8 +963,19 @@ export default function App() {
       document.removeEventListener('visibilitychange', onWake);
       window.removeEventListener('focus', onWake);
       unsubPrefs();
+      unsubReach();
     };
   }, [handle]);
+
+  // The terminal's reach settings, re-read every 30s so a typed
+  // `npx slashvibe-mcp invisible|quiet|mute` takes effect here within about
+  // a minute, without a restart. Machine-wide, so it runs signed in or not.
+  const [reach, setReach] = useState<ReachState>(() => getReachState());
+  useEffect(() => {
+    const unsub = subscribeReach((next) => setReach(next));
+    const stop = watchReach();
+    return () => { unsub(); stop(); };
+  }, []);
 
   // Pair state + auto-session sharing + guest message polling
   const [pairStatus, setPairStatus] = useState<PairStatus>({ paired: false });
@@ -1145,14 +1192,15 @@ export default function App() {
             maxWidth: '200px',
             lineHeight: '1.5',
           }}>
-            Message people from Claude Code or Codex.
+            Message people from Claude Code.
           </div>
         )}
 
-        {/* What signing in actually does. Buddy writes MCP config into every
-            coding agent it finds and starts broadcasting presence within
-            seconds — a friend deserves to know both BEFORE they click, not
-            discover it afterwards. Both are reversible and we say so. */}
+        {/* What signing in actually does. Buddy starts broadcasting presence
+            within seconds — a friend deserves to know BEFORE they click, not
+            discover it afterwards. It writes no coding-agent configuration:
+            /vibe in Claude Code is `npx slashvibe-mcp setup`, shown after
+            sign-in when it is missing. */}
         <div style={{
           fontSize: '10px',
           color: color.faint,
@@ -1167,7 +1215,6 @@ export default function App() {
           <div style={{ color: '#555', fontWeight: 600, marginBottom: '3px' }}>
             When you sign in, Buddy will:
           </div>
-          • add /vibe to your coding agents<br />
           • show others you're online, and what project you're in<br />
           • open at login, so your dot stays lit<br />
           <span style={{ color: '#333' }}>
@@ -1296,7 +1343,7 @@ export default function App() {
             threads={threads}
             presenceError={presenceError}
             recentlyHere={recentlyHere}
-            myPresence={{ prefs: presencePrefs, broadcast: myBroadcast, lastLandedAt: presenceLastLandedAt, retraction: offlineRetraction }}
+            myPresence={{ prefs: presencePrefs, broadcast: myBroadcast, lastLandedAt: presenceLastLandedAt, retraction: offlineRetraction, terminal: { invisible: reach.invisible, quiet: reach.quiet } }}
             onPresenceChange={(patch) => setPresencePrefs(patch)}
             onUserClick={(h) => setView({ type: 'dm', chatWith: h })}
             onSignOut={async () => {
@@ -1501,18 +1548,18 @@ export default function App() {
                 kind: 'warn' as const,
                 text: "your paired session isn't syncing",
               }
-            : mcpStatus && !mcpDismissed && view.type === 'list' && !mcpStatus.installed && !mcpStatus.npx_available
+            : !mcpDismissed && view.type === 'list' && setupLine(mcpStatus)?.needsNode
             ? {
                 kind: 'warn',
-                text: 'terminal integration needs node.js',
+                text: setupLine(mcpStatus)!.text,
                 actions: [{ label: 'get node', onClick: () => window.open('https://nodejs.org', '_blank') },
                           { label: 'dismiss', onClick: () => setMcpDismissed(true) }],
               }
-            : mcpStatus && !mcpDismissed && view.type === 'list' && !mcpStatus.installed
+            : !mcpDismissed && view.type === 'list' && setupLine(mcpStatus)
             ? {
                 kind: 'warn',
-                text: "couldn't set up your coding agents",
-                actions: [{ label: 'try again', onClick: handleRetryMcp },
+                text: setupLine(mcpStatus)!.text,
+                actions: [{ label: setupCopy === 'copied' ? 'copied' : setupCopy === 'failed' ? "couldn't copy" : 'copy command', onClick: copySetupCommand },
                           { label: 'dismiss', onClick: () => setMcpDismissed(true) }],
               }
             : update?.available

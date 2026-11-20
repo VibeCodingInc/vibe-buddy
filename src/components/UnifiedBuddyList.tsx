@@ -46,7 +46,7 @@ interface UnifiedBuddyListProps {
    * synthetic captures (src/dev) never put a real handle in demo material.
    */
   greeter?: string;
-  myPresence?: { prefs: PresencePrefs; broadcast: PresenceBroadcast | null; lastLandedAt: number | null; retraction?: OfflineRetraction };
+  myPresence?: { prefs: PresencePrefs; broadcast: PresenceBroadcast | null; lastLandedAt: number | null; retraction?: OfflineRetraction; terminal?: { invisible: boolean; quiet: boolean } };
   onPresenceChange?: (patch: Partial<PresencePrefs>) => void;
   onUserClick: (handle: string) => void;
   onSignOut: () => void;
@@ -1457,6 +1457,7 @@ export default function UnifiedBuddyList({
             broadcast={myPresence.broadcast}
             lastLandedAt={myPresence.lastLandedAt}
             retraction={myPresence.retraction ?? null}
+            terminal={myPresence.terminal}
             liveSessionCount={
               // Only sessions whose liveness evidence is still fresh count as
               // broadcasters — the platform retains rows past their last
