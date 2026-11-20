@@ -4,6 +4,7 @@
 // Falls back to adaptive polling if SSE fails.
 
 import { buddyClient, type VibeMessage, type VibeThread } from './vibeClient';
+import { openAuthedEventStream } from './sseStream';
 
 const API_URL = 'https://www.slashvibe.dev/api';
 
@@ -29,7 +30,7 @@ class RealtimeMessages {
   private onLive: LiveCallback | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private mode: 'dm' | 'inbox' | 'background' = 'background';
-  private eventSource: EventSource | null = null;
+  private closeStream: (() => void) | null = null;
   private sseConnected = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
@@ -73,59 +74,36 @@ class RealtimeMessages {
 
     this.disconnectSSE();
 
-    const url = `${API_URL}/v2/messages/stream?token=${encodeURIComponent(token)}`;
-    this.eventSource = new EventSource(url);
-
-    this.eventSource.onopen = () => {
-      this.sseConnected = true;
-      this.reconnectDelay = 1000;
-      // SSE is live — stop polling
-      this.stopPolling();
-    };
-
-    this.eventSource.addEventListener('message', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        this.handleSSEEvent({ type: 'message', data });
-      } catch {}
+    // The token travels in the Authorization header, never in the URL
+    // (sseStream.ts): URLs land in access logs.
+    const KNOWN = new Set(['message', 'typing', 'read', 'live', 'live_ended']);
+    let closeThis: (() => void) | null = null;
+    closeThis = openAuthedEventStream(`${API_URL}/v2/messages/stream`, token, {
+      onOpen: () => {
+        if (this.closeStream !== closeThis) return;
+        this.sseConnected = true;
+        this.reconnectDelay = 1000;
+        // SSE is live — stop polling
+        this.stopPolling();
+      },
+      onEvent: (e) => {
+        if (this.closeStream !== closeThis || !KNOWN.has(e.event)) return;
+        try {
+          const data = JSON.parse(e.data);
+          this.handleSSEEvent({ type: e.event as RealtimeEvent['type'], data });
+        } catch {}
+      },
+      onError: () => {
+        if (this.closeStream !== closeThis) return;
+        this.sseConnected = false;
+        this.disconnectSSE();
+        // Fall back to polling immediately
+        this.startPolling();
+        // Try to reconnect SSE with backoff
+        this.scheduleReconnect();
+      },
     });
-
-    this.eventSource.addEventListener('typing', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        this.handleSSEEvent({ type: 'typing', data });
-      } catch {}
-    });
-
-    this.eventSource.addEventListener('read', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        this.handleSSEEvent({ type: 'read', data });
-      } catch {}
-    });
-
-    this.eventSource.addEventListener('live', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        this.handleSSEEvent({ type: 'live', data });
-      } catch {}
-    });
-
-    this.eventSource.addEventListener('live_ended', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        this.handleSSEEvent({ type: 'live_ended', data });
-      } catch {}
-    });
-
-    this.eventSource.onerror = () => {
-      this.sseConnected = false;
-      this.disconnectSSE();
-      // Fall back to polling immediately
-      this.startPolling();
-      // Try to reconnect SSE with backoff
-      this.scheduleReconnect();
-    };
+    this.closeStream = closeThis;
   }
 
   private handleSSEEvent(event: RealtimeEvent) {
@@ -184,9 +162,10 @@ class RealtimeMessages {
   }
 
   disconnectSSE() {
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+    if (this.closeStream) {
+      const close = this.closeStream;
+      this.closeStream = null;
+      close();
     }
     this.sseConnected = false;
     if (this.reconnectTimer) {

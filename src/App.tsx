@@ -1017,21 +1017,15 @@ export default function App() {
         setLoading(false);
         return;
       }
+      // Someone signed in here before, and there is no live session on disk
+      // now: their session ended. That is known locally, with no request —
+      // the buddy-token "recovery" that used to run here mints for house
+      // agents only, so for a person it could only ever fail (NO TOKEN
+      // REFRESH, vibeClient.ts). Sign-in is the way back.
       const saved = localStorage.getItem('buddy_handle');
       if (saved) {
-        buddyClient.setHandle(saved);
-        // Only enter the signed-in UI if this actually authenticated. The
-        // result used to be discarded and the handle set regardless, which
-        // rebuilt the zombie session on every launch for anyone quickAuth
-        // can't serve — i.e. every ordinary GitHub user, since that endpoint
-        // is alpha-whitelist-only.
-        const result = await buddyClient.quickAuthResult(saved);
-        if (result.authenticated) {
-          setHandle(saved);
-        } else {
-          buddyClient.setHandle(null);
-          setAuthFailure(result.error ? 'unavailable' : 'expired');
-        }
+        buddyClient.setHandle(null);
+        setAuthFailure('expired');
       }
       setLoading(false);
     };

@@ -11,7 +11,33 @@
   "app": {
     "withGlobalTauri": false,
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: https://github.com https://avatars.githubusercontent.com",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "font-src": "'self'",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "frame-src": "'none'",
+        "form-action": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'unsafe-inline'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: https://github.com https://avatars.githubusercontent.com",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1421 http://localhost:1421",
+        "font-src": "'self'",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "frame-src": "'none'",
+        "form-action": "'none'"
+      },
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     },
     "windows": [
       {

@@ -717,8 +717,17 @@ fn spawn_bridge(node: &Path, mcp_server: &Path) -> Result<OsBridgeChild, String>
 /// Start a brand-new call: mint a Meet, send the user's bot in, and open the
 /// browser. The deadline begins before the health probe and is passed unchanged
 /// through spawn, initialization and the tool call.
+/// Async + spawn_blocking: this can wait up to CALL_TIMEOUT (60s) on the
+/// bridge, and a synchronous Tauri command runs on the main thread — the
+/// window froze for as long as the call took to start.
 #[tauri::command]
-pub fn vibeconf_start_call(context: Option<String>) -> Result<CallInfo, String> {
+pub async fn vibeconf_start_call(context: Option<String>) -> Result<CallInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || start_call_blocking(context))
+        .await
+        .map_err(|e| format!("worker died: {e}"))?
+}
+
+fn start_call_blocking(context: Option<String>) -> Result<CallInfo, String> {
     let deadline = Instant::now() + CALL_TIMEOUT;
     let mcp_server = mcp_server_path().ok_or(
         "Vibeconferencing app not found in /Applications or ~/Applications",
