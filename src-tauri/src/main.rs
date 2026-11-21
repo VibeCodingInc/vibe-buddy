@@ -11,7 +11,6 @@ mod vibeconf;
 mod terminal;
 mod transcript;
 mod notify;
-mod mind;
 mod work;
 mod drafts;
 mod reach;
@@ -667,9 +666,6 @@ fn main() {
             drafts::discard_terminal_draft,
             work::reveal_in_finder,
             transcript::transcript_signal,
-            mind::mind_prime,
-            mind::mind_facet,
-            mind::mind_trace,
         ])
         .build(tauri::generate_context!())
         .expect("error while running vibe buddy")

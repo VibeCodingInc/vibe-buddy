@@ -1,6 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { askMind, fpTag, looksConsequential, mindTrace, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
-import type { MindFacet } from '../lib/mindClient';
 import { buddyClient, cleanHandle, newIdempotencyKey, sendOutcomeOf, sameAccountSpelling, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
 import { realtime } from '../lib/realtime';
@@ -293,164 +291,6 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   useEffect(() => {
     autosizeComposer(composerRef.current);
   }, [input]);
-  // ── PRIVATE MIND (sender-side telepathy) ─────────────────────────────
-  // One source-honest line or nothing. Never blocks send, never a spinner.
-  // The Studio answers in 30–50s; the result renders ONLY if the same
-  // draft-tension is still current at arrival — else discarded silently.
-  const [mindOffer, setMindOffer] = useState<MindFacet | null>(null);
-  const [mindOfferFp, setMindOfferFp] = useState('');
-  const [mindReveal, setMindReveal] = useState(false);
-  const privateMindDetail =
-    mindOffer?.aperture?.shown_to_owner_only ?? mindOffer?.aperture?.shown_to_seth_only;
-  const mindAskTimer = useRef<number | undefined>(undefined);
-  // 35 × 3s ≈ 105s — outlasts the 90s native request timeout, so a busy
-  // wait always outlives the slot-holder; a genuinely stuck flag still ends.
-  const BUSY_RETRY_CAP = 35;
-  const mindDismissedFp = useRef<Set<string>>(new Set());
-  // ── RETURN ("what changed?") ─────────────────────────────────────────
-  // The exchange is not the point; the changed work is. Armed when a facet
-  // is actually taken into a draft, asked ONCE after that draft is sent,
-  // and answerable in one line or dismissed forever. It records nothing
-  // anywhere else and never becomes a task list.
-  const [returnArmed, setReturnArmed] = useState<string | null>(null);
-  const [returnAsk, setReturnAsk] = useState(false);
-  // THREAD-OPEN PRIMING — invisible. Builds the working set for THIS
-  // relationship (who this is, what was recently said) while the human is
-  // still reading, so an offer can arrive in seconds rather than a minute.
-  // Renders nothing; a failure is silence, exactly like every other Mind path.
-  useEffect(() => {
-    if (messages.length === 0) return;
-    const recent = messages
-      .slice(-8)
-      .map((m) => `${m.from === handle ? 'me' : '@' + chatWith}: ${m.content}`)
-      .join('\n');
-    primeMind(chatWith, `a conversation with @${chatWith}\n${recent}`.slice(0, 2000));
-  }, [chatWith, handle, messages]);
-  useEffect(() => {
-    if (returnArmed && !input.includes(returnArmed)) setReturnArmed(null);
-  }, [input, returnArmed]);
-  // ONE response handler for EVERY ask path (initial, requeue, busy retry,
-  // escalation collection). The review round proved that per-site copies
-  // diverge: a requeued ask dropped the escalation handshake, a stale
-  // escalation cancelled convergence, a busy skip stranded a fresh panel.
-  // `busyRetriesLeft` lets a busy-skipped ask wait for the native slot: the
-  // in-flight request can hold it up to 90s (mind.rs timeout), so retries
-  // run every 3s until the slot frees, the draft changes, or the cap
-  // (~105s > the native timeout) rules out a stuck flag.
-  // `allowEscalation` bounds background collection to ONE quiet re-ask.
-  const runAsk = (fp: string, opts: { busyRetriesLeft: number; allowEscalation: boolean }) => {
-    setInput((cur) => {
-      if (tensionFingerprint(chatWith, cur) === fp) {
-        mindTrace('timer_fired', { fp: fpTag(fp) });
-        void askMind(chatWith, cur).then((res) => handleAskResult(res, fp, opts));
-      }
-      return cur;
-    });
-  };
-  const handleAskResult = (
-    res: Awaited<ReturnType<typeof askMind>>,
-    fp: string,
-    opts: { busyRetriesLeft: number; allowEscalation: boolean }
-  ) => {
-    if (res === 'busy') {
-      // Skipped for an in-flight ask that may belong to an UNMOUNTED panel:
-      // keep retrying at 3s until the native slot frees (runAsk itself stops
-      // the moment the draft moves on), rather than strand this draft.
-      if (opts.busyRetriesLeft <= 0) return;
-      window.clearTimeout(mindAskTimer.current);
-      mindAskTimer.current = window.setTimeout(
-        () => runAsk(fp, { ...opts, busyRetriesLeft: opts.busyRetriesLeft - 1 }),
-        3000
-      );
-      return;
-    }
-    if (!res) return; // refused/unreachable: silence
-    if (res.facet.silence) {
-      if (res.facet.escalating) {
-        // FINGERPRINT FIRST: a stale escalating response for an OLD draft
-        // must not clear the newer draft's debounce or install a dead
-        // collection timer — it converges like any stale completion.
-        let currentFp = '';
-        setInput((cur) => {
-          currentFp = tensionFingerprint(chatWith, cur);
-          return cur;
-        });
-        if (currentFp !== res.fingerprint) {
-          maybeReask(res.fingerprint);
-          return;
-        }
-        if (!opts.allowEscalation) return; // one quiet re-ask, ever
-        // The Mind is still thinking in the background — collect the cached
-        // judgment with ONE quiet re-ask of the SAME fingerprint.
-        // Invisible; sending never waits; no spinner exists to add.
-        mindTrace('escalation_wait', { fp: fpTag(res.fingerprint) });
-        window.clearTimeout(mindAskTimer.current);
-        mindAskTimer.current = window.setTimeout(
-          () => runAsk(res.fingerprint, { busyRetriesLeft: BUSY_RETRY_CAP, allowEscalation: false }),
-          18_000
-        );
-        return;
-      }
-      maybeReask(res.fingerprint);
-      return;
-    }
-    // THE DISCARD RULE: render only if this exact tension is current.
-    setInput((cur) => {
-      if (tensionFingerprint(chatWith, cur) === res.fingerprint) {
-        setMindOffer(res.facet);
-        setMindOfferFp(res.fingerprint);
-      } else {
-        mindTrace('discard_stale', { fp: fpTag(res.fingerprint) });
-        maybeReask(res.fingerprint);
-      }
-      return cur;
-    });
-  };
-  // After an ask COMPLETES stale (or silent), ask once more for the CURRENT
-  // draft if it is eligible and different — one cycle, never a storm: at most
-  // one in-flight ask plus one requeue.
-  const maybeReask = (completedFp: string) => {
-    setInput((cur) => {
-      const fp = tensionFingerprint(chatWith, cur);
-      if (fp !== completedFp && looksConsequential(cur) && !mindDismissedFp.current.has(fp)) {
-        mindTrace('requeued', { fp: fpTag(fp) });
-        window.clearTimeout(mindAskTimer.current);
-        mindAskTimer.current = window.setTimeout(
-          () => runAsk(fp, { busyRetriesLeft: BUSY_RETRY_CAP, allowEscalation: true }),
-          400
-        );
-      }
-      return cur;
-    });
-  };
-
-  useEffect(() => {
-    window.clearTimeout(mindAskTimer.current);
-    // any edit that changes the tension clears a now-stale offer
-    if (mindOffer && tensionFingerprint(chatWith, input) !== mindOfferFp) {
-      setMindOffer(null);
-      setMindReveal(false);
-    }
-    if (!looksConsequential(input)) {
-      if (input.trim().length >= 40) {
-        // long enough to matter, judged ineligible — the Camille class.
-        mindTrace('ineligible', { draft_bytes: new TextEncoder().encode(input).length });
-      }
-      return;
-    }
-    const fp = tensionFingerprint(chatWith, input);
-    if (mindDismissedFp.current.has(fp)) {
-      mindTrace('suppressed_dismissed', { fp: fpTag(fp) });
-      return; // dismissed = dismissed
-    }
-    mindTrace('timer_scheduled', { fp: fpTag(fp) });
-    mindAskTimer.current = window.setTimeout(
-      () => runAsk(fp, { busyRetriesLeft: BUSY_RETRY_CAP, allowEscalation: true }),
-      2500 // debounce: a pause in typing, not every keystroke
-    );
-    return () => window.clearTimeout(mindAskTimer.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, chatWith]);
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -787,18 +627,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
 
   const send = async (text?: string, forceUnlinked?: boolean) => {
     const msg = text || input.trim();
-    // METADATA-ONLY send tracing (P0, 2026-08-28): the ordinary send path
-    // left zero evidence, so a failed send in the field was undiagnosable.
-    // Every gesture leaves a line: fired, blocked (and why), attempted,
-    // resulted, read back. Never the prose.
-    if (!msg) {
-      mindTrace('send_result', { class: 'blocked_empty' });
-      return;
-    }
-    if (sending) {
-      mindTrace('send_result', { class: 'blocked_sending' });
-      return;
-    }
+    if (!msg || sending) return;
     // The parent the HUMAN explicitly chose to answer (never a silent
     // newest-message default). Captured before the async send so an arriving
     // message can't shift the target mid-flight. forceUnlinked (the "send
@@ -815,14 +644,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     // Self-send check on the RESOLVED handle. The words stay in the composer.
     if (sameAccountSpelling(sendTo, handle.trim().toLowerCase())) {
       setSendNote(`@${sendTo} is you — nothing was sent`);
-      mindTrace('send_result', { class: 'refused' });
       setSending(false);
       return;
     }
-    const facetCrosses = Boolean(returnArmed && msg.includes(returnArmed));
-    // A Return is bound to this exact send attempt, never to a later message.
-    // Failed sends do not carry the arm forward into unrelated prose.
-    setReturnArmed(null);
     // One key per optimistic message, minted here and reused by every retry
     // of THIS message — the platform stores it at most once.
     const idempotencyKey = newIdempotencyKey();
@@ -854,16 +678,8 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       setFailReplyTargets((prev) => new Map(prev).set(optimisticId, replyTarget.id));
     }
 
-    const sendStarted = Date.now();
-    mindTrace('send_attempted', { draft_bytes: new TextEncoder().encode(msg).length });
     const result = await buddyClient.sendMessageResult(sendTo, msg, replyTarget?.id, { idempotencyKey });
     const outcome = sendOutcomeOf(result);
-    mindTrace('send_result', {
-      // 'transport' is the trace allowlist's word for "no verdict reached".
-      class: outcome === 'stored' ? 'stored' : outcome === 'refused' ? 'refused' : 'transport',
-      ms: Date.now() - sendStarted,
-      ...(result.id ? { mid: result.id } : {}),
-    });
     if (outcome === 'stored') {
       // Stored: the bubble is no longer an open attempt. Reconciled with the
       // served copy by id when the receipt carried one, by text otherwise.
@@ -877,33 +693,11 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       if (sendTo !== chatWith) {
         setSendNote(`sent to @${sendTo} — the platform's spelling of @${chatWith}`);
       }
-      // READ-BACK (a LENGTH check, stated honestly — review P1): the
-      // server's storedLength receipt is compared against the sent text; it
-      // can catch truncation, never prove byte identity (metadata cannot
-      // carry prose, and the server serves no digest). An absent receipt
-      // field is 'missing' — evidence absent is never evidence of a match.
-      {
-        const lengths = [msg.length, [...msg].length, new TextEncoder().encode(msg).length];
-        mindTrace('send_readback', {
-          ...(result.id ? { mid: result.id } : {}),
-          class:
-            !result.id || result.storedLength === undefined
-              ? 'missing'
-              : lengths.includes(result.storedLength)
-                ? 'match'
-                : 'mismatch',
-        });
-      }
       // A stored-message receipt is exactly the evidence the receipt
       // boundary waits for — the server thread now exists; polling may join,
       // and the receipt outlives this panel (codex r15 P2).
       realtime.recordStoredMessageWith(chatWith);
       setPollArmed(true);
-      // The facet crossed for real. Ask what changed — once, quietly, and
-      // only after the words actually left.
-      if (facetCrosses) {
-        setReturnAsk(true);
-      }
     }
     if (outcome !== 'stored') {
       // 'failed' = the server refused before any write. 'unknown' = no
@@ -1563,149 +1357,6 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         </div>
       )}
 
-      {/* ── PRIVATE MIND: one source-honest line or nothing ─────────────
-          Sender-side telepathy. No spinner, no badge, no persona; sending
-          never waits. Dismiss forgets this exact tension permanently. */}
-      {/* ── RETURN: the only question that matters after a facet crosses ──
-          Not analytics, not a task, not a rating. One line, answerable or
-          dismissable, gone either way. The answer stays local to the human
-          who wrote it — nothing about it crosses the wire. */}
-      {returnAsk && (
-        <div style={{ padding: '6px 12px 0', flexShrink: 0 }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
-            <span style={{ color: color.dim }}>what changed in the work?</span>
-            <span
-              style={{
-                flex: 1,
-                color: color.faint,
-                fontSize: 11,
-              }}
-            >
-              make the change where that work lives
-            </span>
-            <button
-              type="button"
-              aria-label="Dismiss the return question"
-              style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, font: 'inherit' }}
-              onClick={() => setReturnAsk(false)}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-
-      {mindOffer && !mindOffer.silence && (
-        <div style={{ padding: '4px 12px 0', flexShrink: 0 }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, color: color.dim }}>
-            <button
-              type="button"
-              aria-label="Inspect the private source and proposed prose"
-              style={{ cursor: 'pointer', color: 'inherit', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
-              onClick={() => setMindReveal(true)}
-            >
-              {retrievalFactLine(mindOffer)}
-            </button>
-            <button
-              type="button"
-              aria-label="Dismiss this private source"
-              style={{ marginLeft: 'auto', color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
-              onClick={() => {
-                mindDismissedFp.current.add(mindOfferFp);
-                setMindOffer(null);
-                setMindReveal(false);
-              }}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-      {mindReveal && mindOffer && (
-        <div style={{ padding: '8px 12px', borderTop: `1px solid ${color.line}`, flexShrink: 0, fontSize: 12 }}>
-          {mindOffer.offer_kind === 'aperture' ? (
-            <>
-              {/* PRIVATE TO YOU: consult-only prevents direct crossing — it
-                  does not prevent the OWNER from seeing the insight. The
-                  facet renders in full; only the quote may not travel. */}
-              <div style={{ color: color.faint, fontSize: 10, letterSpacing: '0.04em', marginBottom: 4 }}>
-                PRIVATE TO YOU — this may not cross as written
-              </div>
-              {mindOffer.facet && (
-                <div style={{ color: color.ink, marginBottom: 6 }}>{mindOffer.facet}</div>
-              )}
-              {mindOffer.why_rotates && (
-                <div style={{ color: color.dim, marginBottom: 6 }}>{mindOffer.why_rotates}</div>
-              )}
-              <div style={{ color: color.dim, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
-                “{privateMindDetail?.exact_words}”
-              </div>
-              <div style={{ color: color.faint, fontSize: 10.5 }}>
-                {mindOffer.attribution ? `${mindOffer.attribution} · ` : ''}
-                {privateMindDetail?.source || mindOffer.source} ·{' '}
-                {privateMindDetail?.freshness || mindOffer.content_date} ·{' '}
-                {mindOffer.disclosure_reason}
-              </div>
-              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-                <button
-                  type="button"
-                  style={{ color: color.blue, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
-                  onClick={() => {
-                    // "say it in my words": seeds the draft with a PROMPT to
-                    // author the facet, never with the withheld quote.
-                    setInput((cur) => cur.trimEnd());
-                    setMindReveal(false);
-                  }}
-                >
-                  say it in my words
-                </button>
-                <button type="button" style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }} onClick={() => setMindReveal(false)}>
-                  close
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ color: color.ink, whiteSpace: 'pre-wrap', marginBottom: 6 }}>
-                “{mindOffer.quote}”
-              </div>
-              <div style={{ color: color.faint, fontSize: 10.5 }}>
-                {mindOffer.attribution} · {mindOffer.content_date} · {mindOffer.source}
-              </div>
-              {mindOffer.why_rotates && (
-                <div style={{ color: color.dim, marginTop: 6 }}>{mindOffer.why_rotates}</div>
-              )}
-              <div style={{ color: color.faint, fontSize: 10.5, marginTop: 4 }}>
-                {mindOffer.labeled_inference || "your agent's inference that this relates — you judge"}
-                {mindOffer.caveat ? ` · ${mindOffer.caveat}` : ''}
-              </div>
-              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-                <button
-                  type="button"
-                  style={{ color: color.blue, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }}
-                  onClick={() => {
-                    // add & review: appends to the DRAFT for the human to
-                    // edit and send. The Mind never sends.
-                    const candidate = mindOffer.proposed_prose || mindOffer.quote || '';
-                    setInput((cur) => (cur.trimEnd() + '\n\n' + candidate).trim());
-                    setMindReveal(false);
-                    setMindOffer(null);
-                    // A facet that crossed is a loop still open: the exchange
-                    // is only worth anything if some real work changed. Arm
-                    // the Return prompt for after this is actually sent.
-                    setReturnArmed(candidate || null);
-                  }}
-                >
-                  add &amp; review
-                </button>
-                <button type="button" style={{ color: color.faint, cursor: 'pointer', background: 'transparent', border: 0, padding: 0, font: 'inherit' }} onClick={() => setMindReveal(false)}>
-                  close
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
       {/* Input — a 1–4 line textarea (joint critique on buddy#49). The
           single-line input made a newline UNAUTHORABLE from Buddy while the
           terminal and every agent sends structured text on the same thread.
@@ -1846,7 +1497,6 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
               // preventDefault, Return would BOTH send and grow the box.
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                mindTrace('send_clicked', { draft_bytes: new TextEncoder().encode(input).length });
                 send();
               }
             }}
@@ -1870,14 +1520,11 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
           />
           <button
             // Deliberately NOT the `disabled` attribute (P0 send diagnosis):
-            // a disabled button swallows clicks with zero evidence, which is
-            // exactly how a stuck `sending` flag became invisible in the
-            // field. The click always lands, always traces, and send()
-            // itself refuses (and says why) when there is nothing to do.
-            onClick={() => {
-              mindTrace('send_clicked', { draft_bytes: new TextEncoder().encode(input).length });
-              send();
-            }}
+            // a disabled button swallows clicks, which is exactly how a
+            // stuck `sending` flag became invisible in the field. The click
+            // always lands, and send() itself refuses when there is nothing
+            // to do.
+            onClick={() => send()}
             aria-disabled={!input.trim() || sending}
             style={{
               background: input.trim() ? '#6B8FFF' : '#181818',
