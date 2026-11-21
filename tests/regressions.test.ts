@@ -2591,7 +2591,7 @@ describe('the send box never names a transport (Telegram test)', () => {
     // not the contract it names.
     const compose = src.slice(
       warningStart,
-      src.indexOf('{/* ── PRIVATE MIND', warningStart),
+      src.indexOf('{/* Input — a 1–4 line textarea', warningStart),
     );
     expect(compose.length).toBeGreaterThan(200);
     // Comments are stripped first: the ban is on what RENDERS, and the
