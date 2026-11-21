@@ -65,19 +65,6 @@ fn get_os_info() -> String {
     }
 }
 
-/// Write a refreshed token back to `~/.vibe/auth.json`.
-///
-/// The frontend refreshes its own JWT, and without this the new token lived only
-/// in memory — so a restart after the ORIGINAL token expired showed the sign-in
-/// screen despite a valid session having existed seconds earlier.
-#[tauri::command]
-fn save_auth_token(token: String, handle: String) -> Result<(), String> {
-    if token.is_empty() || handle.is_empty() {
-        return Err("refusing to persist an empty token or handle".to_string());
-    }
-    auth::update_token(&token, &handle)
-}
-
 /// Clear the persisted session ONLY if it still holds this exact token — the
 /// guard that keeps a stale asynchronous revocation verdict from erasing a
 /// session re-established while the probe was in flight. The MCP config's
@@ -123,9 +110,24 @@ fn start_login() -> Result<String, String> {
     let url = flow.login_url.clone();
 
     std::thread::spawn(move || {
-        match flow.wait_for_callback(Duration::from_secs(300)) {
+        match flow.wait_for_callback(auth::LOGIN_WINDOW + Duration::from_secs(5)) {
             AuthResult::Success(data) => {
-                let _ = auth::save_auth(&data.token, &data.handle);
+                // The account is whoever the token belongs to — the server's
+                // answer, or (only if it cannot be asked) the token's own
+                // claim. Never the callback URL's `handle` parameter.
+                let handle = match auth::verified_handle(&data.token) {
+                    Ok(Some(h)) => Some(h),
+                    Ok(None) => {
+                        eprintln!("[Auth] The server rejected the delivered token — not signing in");
+                        None
+                    }
+                    Err(e) => {
+                        eprintln!("[Auth] Could not verify the token ({e}) — using its own claim");
+                        auth::token_handle_claim(&data.token)
+                    }
+                };
+                let Some(handle) = handle else { return };
+                let _ = auth::save_auth(&data.token, &handle);
                 // No agent configuration is written here any more: Claude Code
                 // is set up by `npx slashvibe-mcp setup`, which Buddy shows
                 // when check_mcp_status finds it missing (mcp_setup.rs).
@@ -637,7 +639,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             check_auth_status,
             get_os_info,
-            save_auth_token,
             clear_revoked_auth,
             botfile::read_botfile,
             start_login,

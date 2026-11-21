@@ -59,12 +59,6 @@ interface AuthStatus {
   token: string | null;
 }
 
-export interface QuickAuthResult {
-  authenticated: boolean;
-  /** True means the attempt learned nothing; it is not evidence of expiry. */
-  error: boolean;
-}
-
 /**
  * Someone who was here recently but is not here now.
  *
@@ -503,7 +497,6 @@ export function decodeThoughtInvite(
 class BuddyClient {
   private handle: string | null = null;
   private authToken: string | null = null;
-  private refreshing: Promise<boolean> | null = null;
   private presenceInFlight = new Set<Promise<boolean>>();
   private loggingOut = false;
 
@@ -513,6 +506,8 @@ class BuddyClient {
       const status = await invoke<AuthStatus>('check_auth_status');
       if (status.authenticated && status.token) {
         this.loggingOut = false;
+        // A new session re-arms the one-shot expiry notice.
+        if (status.token !== this.authToken) this.sessionExpiredNotified = false;
         this.authToken = status.token;
         this.handle = status.handle;
       }
@@ -645,11 +640,6 @@ class BuddyClient {
     this.handle = handle;
   }
 
-  /** Back-compat for refreshToken, whose caller separately checks token exp. */
-  async quickAuth(handle: string): Promise<boolean> {
-    return (await this.quickAuthResult(handle)).authenticated;
-  }
-
   async stopPair(): Promise<void> {
     if (!this.handle) return;
     try {
@@ -661,91 +651,17 @@ class BuddyClient {
     } catch (e) { console.warn('stopPair error:', e); }
   }
 
-  /**
-   * Quick auth: fetch a JWT from buddy-token endpoint (alpha whitelist)
-   */
-  async quickAuthResult(handle: string): Promise<QuickAuthResult> {
-    try {
-      this.loggingOut = false;
-      const response = await tauriFetch(`${API_URL}/auth/buddy-token`, withTimeout({
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ handle }),
-      }));
-
-      if (response.ok) {
-        const data = await response.json() as any;
-        if (data.token) {
-          this.authToken = data.token;
-          this.handle = data.handle || handle;
-          // A successful authentication re-arms the expiry notice. Resetting
-          // this before the request meant a transport failure could re-arm a
-          // notification without establishing a new session.
-          this.sessionExpiredNotified = false;
-          // Write it to disk too. Holding a refreshed token in memory only meant
-          // ~/.vibe/auth.json kept the ORIGINAL sign-in token, and check_auth
-          // (correctly) refuses an expired one — so once that first token passed
-          // exp, every restart showed the sign-in screen even though a valid
-          // session had just been in hand. Awaited, because a restart racing an
-          // unawaited write is precisely the case this fixes.
-          await this.persistToken(this.authToken!, this.handle!);
-          return { authenticated: true, error: false };
-        }
-        return { authenticated: false, error: true };
-      }
-      // A server rejection is an answer; a 5xx/429 is not.
-      return {
-        authenticated: false,
-        error: response.status >= 500 || response.status === 429,
-      };
-    } catch (e) {
-      console.warn('quickAuth error:', e);
-      return { authenticated: false, error: true };
-    }
-  }
+  // NO TOKEN REFRESH. There used to be one: on any 401, ask
+  // POST /api/auth/buddy-token for a new JWT. That endpoint mints for house
+  // agents only (an x-agent-mint credential Buddy never holds), so for every
+  // person it answered 403 — each 401 spent a request against its rate limit
+  // and could never produce the session the code was written to claim. A
+  // person's session comes from GitHub sign-in alone; when it ends, Buddy
+  // says so (below) and the sign-in screen is the way back.
 
   /**
-   * Write the live token to `~/.vibe/auth.json`.
-   *
-   * Best-effort by design: failing to persist does NOT invalidate the session
-   * the user just established — they stay signed in for this run, and only lose
-   * the benefit on restart. Throwing here would turn a disk problem into a
-   * sign-out, which is strictly worse than the bug being fixed.
-   *
-   * But it is not silent. This codebase's characteristic defect is rendering
-   * confidence over an operation that never happened, so a failure is logged
-   * loudly enough to find in a report rather than swallowed.
-   */
-  private async persistToken(token: string, handle: string): Promise<void> {
-    try {
-      await invoke('save_auth_token', { token, handle });
-    } catch (e) {
-      console.error(
-        'auth: refreshed token could not be persisted — this session survives, ' +
-        'but a restart may require signing in again:', e,
-      );
-    }
-  }
-
-  /**
-   * Refresh token if expired. Deduplicates concurrent refresh attempts.
-   */
-  private async refreshToken(): Promise<boolean> {
-    if (!this.handle) return false;
-    if (this.refreshing) return this.refreshing;
-
-    this.refreshing = this.quickAuth(this.handle);
-    try {
-      return await this.refreshing;
-    } finally {
-      this.refreshing = null;
-    }
-  }
-
-  /**
-   * Make an authenticated request with automatic token refresh on 401.
+   * Make an authenticated request. A 401 is judged, never retried with a
+   * credential Buddy cannot get (see NO TOKEN REFRESH above).
    */
   private async authenticatedRequest(options: {
     method: string;
@@ -788,40 +704,18 @@ class BuddyClient {
 
     const response = await doRequest();
 
-    // On 401, try refreshing token and retry once. If the refresh itself
-    // fails, the session is genuinely dead — tell the app so it can send the
-    // user back to sign-in. Silently returning the 401 produced a "zombie"
-    // Buddy: a signed-in-looking buddy list where nothing worked, with no way
-    // for the user to discover why. This is the common case for anyone
-    // outside the alpha whitelist (i.e. every invited friend), because their
-    // refresh path — quickAuth — can never succeed for them.
+    // On 401: the session may be over. Silently returning the 401 produced a
+    // "zombie" Buddy (signed-in UI, nothing works); treating every 401 as the
+    // end threw people out over one endpoint's refusal. So:
     if (response.status === 401 && this.handle) {
-      const refreshed = await this.refreshToken();
-      if (refreshed) {
-        return doRequest();
-      }
-      // A failed refresh is NOT proof the session is over.
-      //
-      // refreshToken() goes through quickAuth, which is the alpha-whitelist
-      // endpoint — it can never succeed for an ordinary GitHub user. So for
-      // exactly the people we're onboarding, every refresh "fails", and
-      // treating that as expiry meant the FIRST 401 from any endpoint threw
-      // them out of the app. (Sending one DM was enough.) The previous
-      // behavior — swallow it — was the opposite error, leaving a signed-in
-      // UI that did nothing.
-      //
       // The token's own exp is NOT the authority — the server is. A
       // server-side revocation (session-secret rotation, mint-generation
       // bump: both real events, see G8) kills a token whose local exp still
-      // reads valid, and treating local exp as truth produced the zombie
-      // this branch exists to prevent: signed-in UI, every request 401s,
-      // rendered as "Can't reach /vibe — reconnecting automatically" — a
-      // promise reconnecting can never keep (hit live 2026-08-13, a
-      // rotation-killed token). So: locally-expired is still an immediate
-      // sign-out, and a locally-VALID token gets one server verdict via
-      // /api/auth/verify — 401 there means the session is dead however
-      // fresh the exp looks; 200 means this 401 belonged to one endpoint.
-      // A verify we couldn't complete (offline) decides nothing.
+      // reads valid. So: locally-expired is an immediate sign-out, and a
+      // locally-VALID token gets one server verdict via /api/auth/verify —
+      // 401 there means the session is dead however fresh the exp looks;
+      // 200 means this 401 belonged to one endpoint. A verify we couldn't
+      // complete (offline) decides nothing.
       if (this.tokenLooksExpired()) {
         this.onSessionExpired();
       } else {

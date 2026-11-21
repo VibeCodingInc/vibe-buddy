@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -42,6 +42,51 @@ fn get_auth_path() -> PathBuf {
 /// stale revocation probe could compute holds_expected, lose the CPU to a
 /// completing sign-in, then delete the FRESH session (codex P2 round 4).
 static AUTH_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Write a credential-bearing file PRIVATELY and ATOMICALLY:
+///   - the parent directory exists and is 0700 (tightened if it was looser —
+///     the terminal package creates ~/.vibe at 0700 too, so this only ever
+///     narrows what Buddy itself once created at the umask's 0755);
+///   - the bytes go to a fresh temp file in the same directory, created 0600
+///     and synced, then renamed over the target — so a reader (the terminal
+///     package reads the same auth.json) sees the old file or the new one,
+///     never a torn one, and a target that was 0644 is replaced by a 0600 file.
+/// The contents and format are unchanged: the terminal reads them as before.
+pub(crate) fn write_private(path: &Path, contents: &str) -> Result<(), String> {
+    let dir = path.parent().ok_or_else(|| "no parent directory".to_string())?;
+    fs::create_dir_all(dir).map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(dir) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let tmp = dir.join(format!(".{}.{}.{}.tmp", name, std::process::id(), nanos));
+    let result = (|| -> Result<(), String> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options
+            .open(&tmp)
+            .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        f.write_all(contents.as_bytes()).map_err(|e| format!("Failed to write temp file: {}", e))?;
+        f.sync_all().map_err(|e| format!("Failed to sync temp file: {}", e))?;
+        fs::rename(&tmp, path).map_err(|e| format!("Failed to replace {}: {}", path.display(), e))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
 
 /// Minimal base64url decoder — avoids pulling in a crate just to read one
 /// claim. Returns None on any invalid input (caller then treats the token as
@@ -223,11 +268,6 @@ pub fn save_auth(token: &str, handle: &str) -> Result<(), String> {
     let _guard = AUTH_FILE_LOCK.lock().map_err(|_| "auth lock poisoned".to_string())?;
     let path = get_auth_path();
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create .vibe directory: {}", e))?;
-    }
-
     let state = AuthState {
         token: token.to_string(),
         handle: handle.to_string(),
@@ -238,7 +278,7 @@ pub fn save_auth(token: &str, handle: &str) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&state)
         .map_err(|e| format!("Failed to serialize auth state: {}", e))?;
 
-    fs::write(&path, json).map_err(|e| format!("Failed to write auth file: {}", e))?;
+    write_private(&path, &json).map_err(|e| format!("Failed to write auth file: {}", e))?;
 
     // Keep the MCP config's copy of the credential current (same-identity
     // only) — it is written once at setup and otherwise never refreshed, so
@@ -249,66 +289,12 @@ pub fn save_auth(token: &str, handle: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Persist a REFRESHED token over the stored one.
-///
-/// Distinct from `save_auth`, which records a fresh sign-in. The bug this exists
-/// to fix: the frontend refreshes its JWT (`quickAuthResult`) and kept the new
-/// token in memory only, so `~/.vibe/auth.json` still held the token from the
-/// original sign-in. `check_auth` correctly refuses an expired stored token — so
-/// once that first token passed `exp`, every restart showed the sign-in screen
-/// even though the app had been holding a valid session moments earlier.
-///
-/// It hits invited users hardest, which is exactly backwards: the alpha
-/// whitelist could re-mint via `buddy-token`, so the people testing it never saw
-/// what everyone else would.
-///
-/// `provider` and `authenticated_at` describe the ORIGINAL sign-in and are
-/// preserved. Rewriting `authenticated_at` on every refresh would erase when the
-/// user actually authenticated, which is the one thing that field is for.
-/// The actual contract of a token refresh, separated from the filesystem so it
-/// can be tested: the token and handle are replaced, the sign-in metadata is not.
-fn merge_refreshed_token(previous: Option<&AuthState>, token: &str, handle: &str) -> AuthState {
-    AuthState {
-        token: token.to_string(),
-        handle: handle.to_string(),
-        provider: previous
-            .and_then(|p| p.provider.clone())
-            .or_else(|| Some("github".to_string())),
-        authenticated_at: previous
-            .and_then(|p| p.authenticated_at.clone())
-            .or_else(|| Some(chrono::Utc::now().to_rfc3339())),
-    }
-}
-
-pub fn update_token(token: &str, handle: &str) -> Result<(), String> {
-    let _guard = AUTH_FILE_LOCK.lock().map_err(|_| "auth lock poisoned".to_string())?;
-    let path = get_auth_path();
-
-    // Preserve sign-in metadata when there is a readable record to preserve.
-    let previous = fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<AuthState>(&c).ok());
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create .vibe directory: {}", e))?;
-    }
-
-    let state = merge_refreshed_token(previous.as_ref(), token, handle);
-
-    let json = serde_json::to_string_pretty(&state)
-        .map_err(|e| format!("Failed to serialize auth state: {}", e))?;
-
-    fs::write(&path, json).map_err(|e| format!("Failed to write auth file: {}", e))?;
-
-    // Keep the MCP config's copy of the credential current (same-identity
-    // only) — it is written once at setup and otherwise never refreshed, so
-    // without this a reauthenticated Buddy left every terminal session on
-    // yesterday's (possibly revoked) token.
-    sync_mcp_config_token(token, handle);
-
-    Ok(())
-}
+// The refreshed-token writer (update_token / save_auth_token) is gone with
+// the refresh path it served: /api/auth/buddy-token mints for house agents
+// only, so Buddy could never refresh a person's session, and a webview
+// command that writes any token it is handed into auth.json was a standing
+// way to swap the credential the terminal also uses. A fresh session comes
+// only from the OAuth callback below.
 
 pub fn clear_auth() -> Result<(), String> {
     let _guard = AUTH_FILE_LOCK.lock().map_err(|_| "auth lock poisoned".to_string())?;
@@ -460,7 +446,8 @@ where
     let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) else { return };
     if let Some(updated) = decide(cfg) {
         if let Ok(json) = serde_json::to_string_pretty(&updated) {
-            let _ = fs::write(&path, json);
+            // Same rule as auth.json: it carries a token too.
+            let _ = write_private(&path, &json);
         }
     }
 }
@@ -593,10 +580,12 @@ mod mcp_config_tests {
     }
 }
 
+/// What the loopback callback delivered: the token only. The handle is NOT
+/// taken from the callback — a callback parameter is whatever the URL says;
+/// the account is whoever the token belongs to (`resolve_handle`).
 #[derive(Debug, Clone)]
 pub struct AuthCallbackData {
     pub token: String,
-    pub handle: String,
 }
 
 #[derive(Debug)]
@@ -625,48 +614,108 @@ impl LoginFlow {
     }
 }
 
-fn parse_callback(request: &str) -> Option<AuthCallbackData> {
-    let first_line = request.lines().next()?;
-    if !first_line.starts_with("GET /callback") {
-        return None;
+/// How long one sign-in attempt's listener lives (the terminal package uses
+/// the same five minutes: a GitHub sign-in can include 2FA).
+pub const LOGIN_WINDOW: Duration = Duration::from_secs(300);
+
+/// A fresh, single-use state for one sign-in attempt: 32 bytes from the OS
+/// CSPRNG, hex. No crate needed on macOS/Linux.
+fn mint_state() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|e| format!("could not read randomness: {}", e))?;
+    Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+/// Constant-time comparison, so the state cannot be learned byte by byte.
+fn same_secret(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
     }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
-    let query_start = first_line.find('?')?;
-    let query_end = first_line.find(" HTTP")?;
-    let query = &first_line[query_start + 1..query_end];
+/// The callback verdict for one raw request.
+#[derive(Debug, PartialEq)]
+enum Callback {
+    /// Exact path, GET, matching state, a token: the sign-in.
+    Token(String),
+    /// Exact path, GET, matching state, and the platform reported an error.
+    Refused,
+    /// Anything else — wrong path, method or state, no token. Ignored: the
+    /// listener keeps waiting for the real callback until the window ends.
+    Ignore,
+}
 
+/// Parse one request line against THIS attempt's state. Only
+/// `GET /callback?...state=<ours>...` counts; the `handle` parameter is never read.
+fn parse_callback(request: &str, expected_state: &str) -> Callback {
+    let Some(first_line) = request.lines().next() else { return Callback::Ignore };
+    let mut parts = first_line.split(' ');
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else { return Callback::Ignore };
+    if method != "GET" {
+        return Callback::Ignore;
+    }
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (target, ""),
+    };
+    if path != "/callback" {
+        return Callback::Ignore;
+    }
+    let mut state = None;
     let mut token = None;
-    let mut handle = None;
-
+    let mut error = false;
     for pair in query.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        let key = parts.next()?;
-        let value = parts.next().unwrap_or("");
-        let decoded = urlencoding::decode(value).unwrap_or_else(|_| value.into());
-
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let decoded = urlencoding::decode(value).map(|v| v.to_string()).unwrap_or_default();
         match key {
-            "token" => token = Some(decoded.to_string()),
-            "handle" => handle = Some(decoded.to_string()),
+            // A repeated state is ambiguous: refuse rather than pick one.
+            "state" => state = if state.is_some() { Some(String::new()) } else { Some(decoded) },
+            "token" => token = Some(decoded),
+            "error" => error = true,
             _ => {}
         }
     }
-
-    match (token, handle) {
-        (Some(t), Some(h)) => Some(AuthCallbackData { token: t, handle: h }),
-        _ => None,
+    match state {
+        Some(s) if same_secret(&s, expected_state) => {}
+        _ => return Callback::Ignore,
+    }
+    match token {
+        Some(t) if !t.is_empty() => Callback::Token(t),
+        _ if error => Callback::Refused,
+        _ => Callback::Ignore,
     }
 }
 
+const PAGE_HEAD: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+
+/// The pages carry no data from the request (nothing reflected).
+fn page(body: &str) -> String {
+    format!(
+        "{PAGE_HEAD}<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>body {{ font-family: ui-monospace, monospace; background: #0a0a0a; color: #ccc; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}</style></head><body><p>{body}</p></body></html>"
+    )
+}
+
 pub fn start_login() -> Result<LoginFlow, String> {
+    // Loopback only, on an OS-chosen port; the callback URL names the same
+    // literal address the socket is bound to.
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("Failed to bind to local port: {}", e))?;
-
     let port = listener
         .local_addr()
         .map_err(|e| format!("Failed to get local address: {}", e))?
         .port();
+    let state = mint_state()?;
 
-    let callback_url = format!("http://localhost:{}/callback", port);
+    // The state rides inside the redirect URL. The platform keeps the
+    // redirect's own query and appends token/handle to it
+    // (api/auth/github/callback.js: `${finalRedirectUri}${separator}token=…`),
+    // so it comes back to us without any platform change — the same
+    // mechanism slashvibe-mcp's oauth-callback.js uses.
+    let callback_url = format!("http://127.0.0.1:{}/callback?state={}", port, state);
     let login_url = format!(
         "https://www.slashvibe.dev/api/auth/github?redirect={}&app=buddy",
         urlencoding::encode(&callback_url)
@@ -677,59 +726,32 @@ pub fn start_login() -> Result<LoginFlow, String> {
     thread::spawn(move || {
         listener.set_nonblocking(true).ok();
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(300);
-
         loop {
-            if start.elapsed() > timeout {
+            if start.elapsed() > LOGIN_WINDOW {
                 let _ = tx.send(AuthResult::Timeout);
                 break;
             }
-
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    let mut buffer = [0; 4096];
-                    if let Ok(n) = stream.read(&mut buffer) {
-                        let request = String::from_utf8_lossy(&buffer[..n]);
-
-                        if let Some(result) = parse_callback(&request) {
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\n\
-                                Content-Type: text/html; charset=utf-8\r\n\
-                                Connection: close\r\n\r\n\
-                                <!DOCTYPE html>\
-                                <html><head>\
-                                <style>\
-                                body {{ font-family: ui-monospace, monospace; background: #0a0a0a; color: #00FF88; \
-                                display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}\
-                                .container {{ text-align: center; }}\
-                                h1 {{ font-size: 48px; margin-bottom: 16px; text-shadow: 0 0 20px #00FF88; }}\
-                                p {{ color: #888; font-size: 18px; }}\
-                                </style></head>\
-                                <body><div class='container'>\
-                                <h1>✓</h1>\
-                                <p>Logged in as @{}. You can close this tab.</p>\
-                                </div></body></html>",
-                                result.handle
-                            );
-                            let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut buffer = [0; 8192];
+                    let n = stream.read(&mut buffer).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..n]);
+                    match parse_callback(&request, &state) {
+                        Callback::Token(token) => {
+                            let _ = stream.write_all(page("Signed in. You can close this tab and return to Buddy.").as_bytes());
                             let _ = stream.flush();
-
-                            let _ = tx.send(AuthResult::Success(result));
-                            break;
-                        } else if request.contains("error=") {
-                            let response = "HTTP/1.1 200 OK\r\n\
-                                Content-Type: text/html; charset=utf-8\r\n\
-                                Connection: close\r\n\r\n\
-                                <!DOCTYPE html>\
-                                <html><head>\
-                                <style>\
-                                body { font-family: ui-monospace, monospace; background: #0a0a0a; color: #FF0088; \
-                                display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }\
-                                </style></head>\
-                                <body><p>Login failed. Please try again.</p></body></html>";
-                            let _ = stream.write_all(response.as_bytes());
+                            let _ = tx.send(AuthResult::Success(AuthCallbackData { token }));
+                            break; // single use: the listener is dropped here
+                        }
+                        Callback::Refused => {
+                            let _ = stream.write_all(page("Sign-in did not complete. You can close this tab and try again from Buddy.").as_bytes());
                             let _ = tx.send(AuthResult::Error("OAuth error".to_string()));
                             break;
+                        }
+                        Callback::Ignore => {
+                            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
                         }
                     }
                 }
@@ -751,69 +773,133 @@ pub fn start_login() -> Result<LoginFlow, String> {
     })
 }
 
+/// Who a freshly delivered token belongs to: the SERVER's answer
+/// (GET /api/auth/verify → { valid, handle }), never a callback parameter.
+/// Ok(None) means the server explicitly rejected the token (do not sign in).
+/// Err means the server could not be asked; the caller may then fall back to
+/// the token's own `handle` claim — still the token, never the URL.
+pub fn verified_handle(token: &str) -> Result<Option<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .get("https://www.slashvibe.dev/api/auth/verify")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let text = res.text().unwrap_or_default();
+    decide_verified_handle(status, &text)
+}
+
+/// Pure half of `verified_handle`, for tests.
+fn decide_verified_handle(status: u16, body: &str) -> Result<Option<String>, String> {
+    if status == 401 {
+        return Ok(None);
+    }
+    if status != 200 {
+        return Err(format!("verify answered {}", status));
+    }
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|_| "verify answer unreadable".to_string())?;
+    if v.get("valid") != Some(&serde_json::Value::Bool(true)) {
+        return Ok(None);
+    }
+    match v.get("handle").and_then(|h| h.as_str()).map(|h| h.trim().to_lowercase()) {
+        Some(h) if !h.is_empty() => Ok(Some(h)),
+        _ => Err("verify answer had no handle".to_string()),
+    }
+}
+
+/// The token's own `handle`/`sub` claim (unverified decode), for when the
+/// verify call could not be made. The token is what the server signed; the
+/// server rejects a forged one on first use.
+pub fn token_handle_claim(token: &str) -> Option<String> {
+    jwt_handle_claim(token).map(|h| h.trim().to_lowercase()).filter(|h| !h.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn signed_in() -> AuthState {
-        AuthState {
-            token: "original.jwt.token".to_string(),
-            handle: "brightseth".to_string(),
-            provider: Some("github".to_string()),
-            authenticated_at: Some("2026-07-01T00:00:00Z".to_string()),
-        }
+    const ST: &str = "aa11bb22";
+
+    #[test]
+    fn only_the_exact_get_callback_with_our_state_counts() {
+        assert_eq!(parse_callback(&format!("GET /callback?state={ST}&token=t.k.n&handle=x HTTP/1.1\r\n"), ST), Callback::Token("t.k.n".into()));
+        // wrong or missing state, wrong path, wrong method, no token: ignored
+        assert_eq!(parse_callback("GET /callback?state=nope&token=t HTTP/1.1\r\n", ST), Callback::Ignore);
+        assert_eq!(parse_callback("GET /callback?token=t&handle=x HTTP/1.1\r\n", ST), Callback::Ignore);
+        assert_eq!(parse_callback(&format!("GET /callbackx?state={ST}&token=t HTTP/1.1\r\n"), ST), Callback::Ignore);
+        assert_eq!(parse_callback(&format!("GET /other/callback?state={ST}&token=t HTTP/1.1\r\n"), ST), Callback::Ignore);
+        assert_eq!(parse_callback(&format!("POST /callback?state={ST}&token=t HTTP/1.1\r\n"), ST), Callback::Ignore);
+        assert_eq!(parse_callback(&format!("GET /callback?state={ST} HTTP/1.1\r\n"), ST), Callback::Ignore);
+        // a repeated state is refused, whichever copy matches
+        assert_eq!(parse_callback(&format!("GET /callback?state={ST}&state=x&token=t HTTP/1.1\r\n"), ST), Callback::Ignore);
+        // the platform's error, under our state
+        assert_eq!(parse_callback(&format!("GET /callback?state={ST}&error=denied HTTP/1.1\r\n"), ST), Callback::Refused);
+        // garbage
+        assert_eq!(parse_callback("", ST), Callback::Ignore);
     }
 
     #[test]
-    fn refresh_replaces_the_token() {
-        let merged = merge_refreshed_token(Some(&signed_in()), "fresh.jwt.token", "brightseth");
-        assert_eq!(merged.token, "fresh.jwt.token");
-    }
-
-    /// The whole point of `update_token` over `save_auth`: a refresh is not a
-    /// new sign-in, so it must not rewrite when the user actually authenticated.
-    #[test]
-    fn refresh_preserves_original_sign_in_metadata() {
-        let merged = merge_refreshed_token(Some(&signed_in()), "fresh.jwt.token", "brightseth");
-        assert_eq!(merged.authenticated_at.as_deref(), Some("2026-07-01T00:00:00Z"));
-        assert_eq!(merged.provider.as_deref(), Some("github"));
+    fn the_callback_handle_parameter_is_never_read() {
+        let src = include_str!("auth.rs");
+        assert!(!src.contains(concat!("\"handle", "\" =>")), "the callback must not read a handle parameter");
     }
 
     #[test]
-    fn refresh_preserves_a_non_github_provider() {
-        let mut prior = signed_in();
-        prior.provider = Some("google".to_string());
-        let merged = merge_refreshed_token(Some(&prior), "fresh.jwt.token", "brightseth");
-        assert_eq!(merged.provider.as_deref(), Some("google"));
+    fn states_are_fresh_and_long() {
+        let a = mint_state().unwrap();
+        let b = mint_state().unwrap();
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, b);
+        assert!(same_secret(&a, &a.clone()));
+        assert!(!same_secret(&a, &b));
+        assert!(!same_secret(&a, &a[..63]));
     }
 
-    /// A corrupt or absent auth.json must not block persisting a good token —
-    /// that would strand the user in the exact loop this change fixes.
     #[test]
-    fn refresh_without_prior_state_still_produces_a_usable_record() {
-        let merged = merge_refreshed_token(None, "fresh.jwt.token", "newuser");
-        assert_eq!(merged.token, "fresh.jwt.token");
-        assert_eq!(merged.handle, "newuser");
-        assert!(merged.provider.is_some());
-        assert!(merged.authenticated_at.is_some());
+    fn the_account_is_the_servers_answer() {
+        assert_eq!(decide_verified_handle(200, r#"{"valid":true,"handle":"Brightseth"}"#), Ok(Some("brightseth".into())));
+        assert_eq!(decide_verified_handle(401, r#"{"valid":false}"#), Ok(None));
+        assert_eq!(decide_verified_handle(200, r#"{"valid":false}"#), Ok(None));
+        assert!(decide_verified_handle(503, "").is_err());
+        assert!(decide_verified_handle(200, "<html>").is_err());
+        assert!(decide_verified_handle(200, r#"{"valid":true}"#).is_err());
     }
 
-    /// A handle change (server returns the canonical handle) must be recorded,
-    /// or presence and identity drift from the credential.
     #[test]
-    fn refresh_adopts_a_corrected_handle() {
-        let merged = merge_refreshed_token(Some(&signed_in()), "fresh.jwt.token", "brightseth2");
-        assert_eq!(merged.handle, "brightseth2");
+    fn pages_reflect_nothing_from_the_request() {
+        let src = include_str!("auth.rs");
+        assert!(!src.contains(concat!("Logged in", " as @{}")));
+        assert!(page("x").starts_with("HTTP/1.1 200 OK\r\n"));
     }
 
-    /// The round trip that actually matters: a refreshed token written and read
-    /// back must be reported as an authenticated session, not an expired one.
+    #[test]
+    fn private_writes_are_0600_in_a_0700_dir_and_tighten_looser_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("buddy-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let f = dir.join("auth.json");
+        fs::write(&f, "old").unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&f, "{\"token\":\"t\",\"handle\":\"h\"}").unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "{\"token\":\"t\",\"handle\":\"h\"}");
+        assert_eq!(fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        // no temp file left behind
+        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();
+        assert!(leftovers.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_persisted_unexpired_token_is_not_treated_as_expired() {
         // exp far in the future; payload is base64url of {"exp":4102444800}
-        let future = "aaa.eyJleHAiOjQxMDI0NDQ4MDB9.bbb";
-        assert!(!is_jwt_expired(future));
-        let merged = merge_refreshed_token(Some(&signed_in()), future, "brightseth");
-        assert!(!is_jwt_expired(&merged.token));
+        assert!(!is_jwt_expired("aaa.eyJleHAiOjQxMDI0NDQ4MDB9.bbb"));
     }
 }

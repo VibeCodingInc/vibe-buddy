@@ -1250,21 +1250,14 @@ describe('network booleans do not manufacture authoritative state', () => {
     httpFetch.mockClear();
   });
 
-  it('a network failure during saved-login recovery cannot be rendered as session expiry', async () => {
-    // THE BUG: quickAuth returned the same false for a real rejection and a
-    // transport failure. App translated both into "Your session expired", so
-    // opening Buddy offline made a confident claim it had not established.
-    httpFetch.mockRejectedValueOnce(new Error('network unavailable'));
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const { buddyClient } = await import('../src/lib/vibeClient');
-      await expect(buddyClient.quickAuthResult('alice')).resolves.toEqual({
-        authenticated: false,
-        error: true,
-      });
-    } finally {
-      warn.mockRestore();
-    }
+  it('saved-login recovery makes no request and claims only what is known locally', () => {
+    // It used to ask /api/auth/buddy-token for a session — an endpoint that
+    // mints for house agents only, so for a person it could never succeed
+    // (and offline it had to guess). No session on disk after one existed
+    // is known locally: the session ended. No network, no guess.
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(app).not.toMatch(/quickAuth/);
+    expect(app).toMatch(/if \(saved\) \{\n\s*buddyClient\.setHandle\(null\);\n\s*setAuthFailure\('expired'\);/);
   });
 
   it('a failed login launch cannot leave Waiting for browser on screen', async () => {
@@ -1380,80 +1373,19 @@ describe('the call you started is not lost when the toast closes', () => {
   });
 });
 
-// A refreshed token that lives only in memory.
-//
-// quickAuthResult() minted a new JWT and assigned it to this.authToken, but
-// nothing wrote it back to ~/.vibe/auth.json. check_auth (Rust) correctly
-// refuses a stored token past exp — so once the ORIGINAL sign-in token expired,
-// every restart showed the sign-in screen even though a valid session had been
-// in hand seconds earlier.
-//
-// It hit invited users hardest, which is exactly backwards: whitelisted alpha
-// handles could always re-mint via buddy-token, so the people testing it were
-// the only ones who never saw it.
-describe('refreshed tokens survive a restart', () => {
-  beforeEach(() => {
-    tauriInvoke.mockClear();
-    presencePayload.ok = true;
-  });
-
-  const respondWithToken = (token: string, handle = 'friend') => {
-    httpFetch.mockImplementationOnce(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ token, handle }),
-      text: async () => '',
-    }) as any);
-  };
-
-  it('persists the refreshed token through the tauri command', async () => {
-    const { buddyClient } = await import('../src/lib/vibeClient');
-    respondWithToken('fresh.jwt.token');
-
-    const result = await (buddyClient as any).quickAuthResult('friend');
-
-    expect(result.authenticated).toBe(true);
-    const saved = tauriInvoke.mock.calls.find((c: any[]) => c[0] === 'save_auth_token');
-    expect(saved, 'a successful refresh must write the token to disk').toBeTruthy();
-    expect((saved as any[])[1]).toMatchObject({ token: 'fresh.jwt.token', handle: 'friend' });
-  });
-
-  it('does not persist anything when the refresh fails', async () => {
-    const { buddyClient } = await import('../src/lib/vibeClient');
-    httpFetch.mockImplementationOnce(async () => ({
-      ok: false, status: 401, json: async () => ({}), text: async () => '',
-    }) as any);
-
-    await (buddyClient as any).quickAuthResult('friend');
-
-    const saved = tauriInvoke.mock.calls.find((c: any[]) => c[0] === 'save_auth_token');
-    expect(saved, 'a failed refresh must not overwrite a good stored token').toBeFalsy();
-  });
-
-  // Losing the disk write is bad; losing the session is worse. A storage
-  // failure must leave the user signed in for this run.
-  it('keeps the session when persistence fails', async () => {
-    const { buddyClient } = await import('../src/lib/vibeClient');
-    respondWithToken('fresh.jwt.token');
-    tauriInvoke.mockImplementationOnce(async () => { throw new Error('disk full'); });
-
-    const result = await (buddyClient as any).quickAuthResult('friend');
-
-    expect(result.authenticated).toBe(true);
-    expect(result.error).toBe(false);
-    expect((buddyClient as any).getAuthToken()).toBe('fresh.jwt.token');
-  });
-
-  // The server is allowed to correct the handle; the credential on disk has to
-  // follow, or presence and identity drift apart.
-  it('persists the handle the server returned, not the one requested', async () => {
-    const { buddyClient } = await import('../src/lib/vibeClient');
-    respondWithToken('fresh.jwt.token', 'canonical-handle');
-
-    await (buddyClient as any).quickAuthResult('requested-handle');
-
-    const saved = tauriInvoke.mock.calls.find((c: any[]) => c[0] === 'save_auth_token');
-    expect((saved as any[])[1]).toMatchObject({ handle: 'canonical-handle' });
+// NO TOKEN REFRESH (2026-11-20). The refresh path — 401 → POST
+// /api/auth/buddy-token → persist via save_auth_token — could never serve a
+// person: that endpoint mints for house agents holding an x-agent-mint
+// credential, which Buddy never has. It is removed, together with the webview
+// command that wrote any token it was handed into ~/.vibe/auth.json.
+describe('there is no token refresh to pretend with', () => {
+  it('the client has no buddy-token call, refresh, or token-persisting command', () => {
+    const src = readFileSync(new URL('../src/lib/vibeClient.ts', import.meta.url), 'utf8');
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toMatch(/auth\/buddy-token/);
+    expect(code).not.toMatch(/quickAuth|refreshToken|save_auth_token|persistToken/);
+    const main = readFileSync(new URL('../src-tauri/src/main.rs', import.meta.url), 'utf8');
+    expect(main).not.toMatch(/save_auth_token/);
   });
 });
 

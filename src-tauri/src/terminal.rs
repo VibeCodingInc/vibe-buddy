@@ -387,6 +387,12 @@ pub async fn place_in_terminal_session(
         .map_err(|e| format!("worker died: {e}"))?
 }
 
+/// The first control character in `text` (C0, DEL, C1 — `char::is_control`),
+/// or the Unicode line/paragraph separators a terminal may also treat as a break.
+fn first_control(text: &str) -> Option<char> {
+    text.chars().find(|c| c.is_control() || *c == '\u{2028}' || *c == '\u{2029}')
+}
+
 fn place_text(tty: &str, text: &str) -> Result<(), String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -396,6 +402,12 @@ fn place_text(tty: &str, text: &str) -> Result<(), String> {
         // In `write text ... newline NO`, an embedded newline is still a
         // submission. One draft, one line — the guarantee depends on it.
         return Err("one line at a time — a newline would submit, and submitting is yours to do".into());
+    }
+    if let Some(c) = first_control(trimmed) {
+        // A carriage return submits exactly like a newline in a terminal, and
+        // the other control characters (escape sequences, ^C, ^U, tab, DEL…)
+        // are keystrokes, not text. Only printable text is ever placed.
+        return Err(format!("that text holds a control character (U+{:04X}) — only plain text can be placed, and submitting is yours to do", c as u32));
     }
     if foreground_claude_pid(tty).is_none() {
         return Err(
@@ -463,6 +475,16 @@ mod tests {
         // timing can ever make a shell execute a Buddy draft.
         let place = write_text_script("/dev/ttys008", "hello");
         assert!(place.contains(r#"write text "hello" newline NO"#));
+    }
+
+    #[test]
+    fn control_characters_are_never_placed() {
+        for bad in ["a\rb", "\u{1b}[A", "x\u{3}y", "x\u{15}y", "tab\there", "del\u{7f}x", "c1\u{85}x", "ls\u{2028}rm"] {
+            assert!(first_control(bad).is_some(), "{bad:?}");
+            // ...and the refusal happens before any terminal is touched.
+            assert!(place_text("/dev/ttys999", bad).is_err());
+        }
+        assert_eq!(first_control("plain text — with unicode ✓"), None);
     }
 
     #[test]
