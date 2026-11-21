@@ -66,7 +66,17 @@ export function presenceStatusLine(args: {
    * runtimes broadcast, which is not the same as none doing so.
    */
   liveSessionCount?: number | null;
+  /**
+   * The terminal's `npx slashvibe-mcp invisible` is on (reach.json). Buddy
+   * then sends no heartbeat whatever its own toggle says, and the line says
+   * exactly that — what Buddy does, and how it was set — and nothing about
+   * what other people see, which other machines' sessions also decide.
+   */
+  terminalInvisible?: boolean;
 }): string {
+  if (args.terminalInvisible) {
+    return "Buddy isn't announcing you — the terminal's invisible setting is on (undo: npx slashvibe-mcp visible)";
+  }
   if (!args.sharing) {
     // "Invisible" is a claim about what OTHERS see, and the pref alone cannot
     // back it (audit #6): the offline write can fail, and coding sessions

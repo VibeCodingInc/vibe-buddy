@@ -41,6 +41,7 @@ export function MyPresenceCard({
   lastLandedAt,
   retraction = null,
   liveSessionCount = null,
+  terminal,
   onChange,
 }: {
   handle: string;
@@ -54,6 +55,8 @@ export function MyPresenceCard({
    * null when the latest read failed: cannot-see, which is not zero.
    */
   liveSessionCount?: number | null;
+  /** The terminal's reach.json flags (npx slashvibe-mcp invisible / quiet). */
+  terminal?: { invisible: boolean; quiet: boolean };
   onChange: (patch: Partial<PresencePrefs>) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -111,6 +114,7 @@ export function MyPresenceCard({
     now,
     retraction,
     liveSessionCount,
+    terminalInvisible: terminal?.invisible === true,
   });
 
   // Is the last broadcast still fresh enough to be "what others see"? Same gate
@@ -234,6 +238,17 @@ export function MyPresenceCard({
         }}>
           {statusLine}
         </div>
+        {terminal?.quiet && (
+          <div data-testid="terminal-quiet-line" style={{
+            fontSize: '10px',
+            color: color.faint,
+            marginTop: '2px',
+            paddingLeft: '36px',
+            lineHeight: 1.4,
+          }}>
+            No message alerts — the terminal's quiet setting is on (undo: npx slashvibe-mcp unquiet)
+          </div>
+        )}
       </div>
 
       {expanded && (
