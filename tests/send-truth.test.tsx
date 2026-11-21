@@ -36,7 +36,7 @@ const m = (id: string, from: string, content: string, at = new Date()): VibeMess
   id, from, to: from === ME ? THEM : ME, content, timestamp: at.toISOString(), status: 'sent',
 });
 
-type Sent = { to: string; content: string; replyTo?: string; key?: string };
+type Sent = { to: string; content: string; replyTo?: string; key?: string; resolved?: boolean };
 let sent: Sent[] = [];
 let replies: SendResult[] = [];
 let incoming: ((thread: VibeMessage[]) => void) | null = null;
@@ -53,7 +53,7 @@ beforeEach(() => {
   vi.spyOn(realtime, 'recordStoredMessageWith').mockImplementation(() => {});
   vi.spyOn(buddyClient, 'sendTypingIndicator').mockResolvedValue(undefined as never);
   vi.spyOn(buddyClient, 'sendMessageResult').mockImplementation(async (to, content, replyTo, opts) => {
-    sent.push({ to, content, replyTo, key: opts?.idempotencyKey });
+    sent.push({ to, content, replyTo, key: opts?.idempotencyKey, resolved: (opts as any)?.resolved });
     return replies.shift() ?? { ok: true, outcome: 'stored', id: `srv_${sent.length}` };
   });
   memStore.clear();
@@ -137,6 +137,9 @@ describe('2 · one idempotency key per optimistic message, reused by every retry
     expect(k3).toBe(k1);
     expect(k4).toBeTruthy();
     expect(k4).not.toBe(k1);
+    // The composer resolved the spelling itself and pinned it for Retry, so
+    // every attempt tells the send function not to resolve a second time.
+    expect(sent.every((s) => s.resolved === true)).toBe(true);
   });
 
   it('a retry keeps the chosen reply target, so it is the identical request (a replay, never a conflict)', async () => {
