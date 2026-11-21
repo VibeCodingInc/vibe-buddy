@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { buddyClient, type VibeUser, type VibeThread, type SessionEntity, type PairStatus, type MySession, type RecentTrace } from './lib/vibeClient';
+import { buddyClient, cleanHandle, type VibeUser, type VibeThread, type SessionEntity, type PairStatus, type MySession, type RecentTrace } from './lib/vibeClient';
 import { nextMySessionsProbe, type MySessionsProbe } from './lib/mySessionsState';
 import { getCodingDNA, dnaToPresencePayload } from './lib/contextExtractor';
 import { getPresencePrefs, setPresencePrefs, subscribePresencePrefs, type PresencePrefs, type PresenceBroadcast, type OfflineRetraction } from './lib/presencePrefs';
@@ -230,6 +230,23 @@ export default function App() {
   // transport/plugin failure: only the former supports "your session expired".
   const [authFailure, setAuthFailure] = useState<'expired' | 'unavailable' | 'login' | null>(null);
   const [view, setView] = useState<View>({ type: 'list' });
+  // Open a conversation by a handle that was TYPED or LINKED (search door,
+  // deep link, @mention): cleaned, and for a handle written with '-', opened
+  // under the platform's own spelling when its identity lookup finds the
+  // same account under '_'. A late answer never yanks the person away from
+  // somewhere they navigated in the meantime.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const openConversation = useCallback((raw: string) => {
+    const typed = cleanHandle(raw);
+    if (!typed) return;
+    if (!typed.includes('-')) { setView({ type: 'dm', chatWith: typed }); return; }
+    const startedFrom = viewRef.current;
+    void buddyClient.resolveRecipient(typed).then((to) => {
+      if (viewRef.current !== startedFrom) return;
+      setView({ type: 'dm', chatWith: to });
+    });
+  }, []);
   const [users, setUsers] = useState<VibeUser[]>([]);
   const [sessions, setSessions] = useState<SessionEntity[]>([]);
   const [mySessions, setMySessions] = useState<MySession[]>([]);
@@ -349,7 +366,7 @@ export default function App() {
         const route = routeDeepLink(raw);
         if (!route || disposed) continue;
         if (route.kind === 'dm') {
-          setView({ type: 'dm', chatWith: route.handle });
+          openConversation(route.handle);
           return;
         }
         if (route.kind === 'thread') {
@@ -1345,7 +1362,7 @@ export default function App() {
             recentlyHere={recentlyHere}
             myPresence={{ prefs: presencePrefs, broadcast: myBroadcast, lastLandedAt: presenceLastLandedAt, retraction: offlineRetraction, terminal: { invisible: reach.invisible, quiet: reach.quiet } }}
             onPresenceChange={(patch) => setPresencePrefs(patch)}
-            onUserClick={(h) => setView({ type: 'dm', chatWith: h })}
+            onUserClick={openConversation}
             onSignOut={async () => {
               // Stop being signed in FIRST, then retract over the network.
               //
@@ -1390,7 +1407,7 @@ export default function App() {
             chatWith={view.chatWith}
             onBack={() => setView({ type: 'list' })}
             users={users}
-            onOpenThread={(h) => setView({ type: 'dm', chatWith: h })}
+            onOpenThread={openConversation}
             presenceStale={clockTick - presenceLandedAt > STALE_AFTER_MS}
             // KNOWN BOUNDARY (codex r4 P2, held on the platform seam): the
             // inbox omits ARCHIVED threads by design, so an archived

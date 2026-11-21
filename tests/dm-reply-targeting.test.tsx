@@ -19,7 +19,7 @@ const memStore = new Map<string, string>();
   key: (i: number) => [...memStore.keys()][i] ?? null,
   get length() { return memStore.size; },
 };
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { buddyClient, type VibeMessage } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
@@ -35,6 +35,7 @@ const m = (id: string, from: string, content: string): VibeMessage => ({
 let sent: Array<{ content: string; replyTo?: string }> = [];
 let ok = true;
 beforeEach(() => {
+  clearUnresolvedAttempts();
   sent = []; ok = true;
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});

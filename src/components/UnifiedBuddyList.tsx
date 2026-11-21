@@ -718,16 +718,24 @@ export default function UnifiedBuddyList({
       users.some((u) => u.handle.toLowerCase() === raw) ||
       threads.some((t) => t.with.toLowerCase() === raw) ||
       recentlyHere.some((t) => t.handle.toLowerCase() === raw);
+    // The GRAMMAR is judged on the registrable form, but an unsighted raw
+    // '-' form is no longer folded blindly: the door opens it as typed and
+    // the host resolves the platform's spelling (GET /api/identity, the same
+    // rule as the terminal package) — a lookup that cannot confirm keeps it
+    // as typed, never a guess.
     const c = servedRaw ? raw : raw.replace(/-/g, '_');
     if (c.length < 3 || c.length > 20) return null;
     if (!/^[a-z0-9_-]+$/.test(c) || c.startsWith('_') || /^[0-9]+$/.test(c)) return null;
-    return c;
+    return raw;
   })();
   // Synthetic-QA principals are deliberately filtered off this board
   // (isTestAccount); the compose door must not reopen them — a successful
   // send would land in a conversation the list then hides (codex r9 P2).
   const composeRaw = q ? query.trim().replace(/^@/, '').toLowerCase() : null;
-  const composeQuery = composeCandidate && !isTestAccount(composeCandidate) && !(composeRaw && isTestAccount(composeRaw))
+  // Both spellings are checked: the candidate is now the raw form, and the
+  // platform may resolve 'test-x' to the synthetic 'test_x'.
+  const composeQuery = composeCandidate && !isTestAccount(composeCandidate) &&
+    !isTestAccount(composeCandidate.replace(/-/g, '_')) && !(composeRaw && isTestAccount(composeRaw))
     ? composeCandidate : null;
   // EXACT beats fuzzy, and RENDERED beats known (codex r4 P2, r5 P2):
   // typing 'bob' toward a new @bob while @bobby exists hid the only compose
@@ -752,7 +760,8 @@ export default function UnifiedBuddyList({
   // coexist with a canonicalized door that steals Enter toward a different
   // underscore principal.
   const composeTargetPresented = composeQuery !== null &&
-    (presentedHandles.has(composeQuery) || presentedHandles.has(composeQuery.replace(/_/g, '-')));
+    (presentedHandles.has(composeQuery) || presentedHandles.has(composeQuery.replace(/_/g, '-')) ||
+      presentedHandles.has(composeQuery.replace(/-/g, '_')));
   const firstMessageFallback = composeQuery && !composeTargetPresented ? (
     <div style={{ textAlign: 'center', paddingBottom: '16px' }}>
       <button
