@@ -6,6 +6,10 @@ findings were a **fabricated JWT used as input to the redaction test**
 (`tests/diagnostics.test.ts` — a token whose payload is just a handle and whose
 signature is fake), allowlisted in `.gitleaks.toml`.
 
+One more fabricated value was allowlisted in November 2026: the made-up session
+token in `tests/send-truth-client.test.ts`, whose payload is only a far-future
+expiry and whose header and signature are single letters.
+
 No real credential, key, or token exists in this repository. Public-by-design
 values that are *not* secrets: the app bundle identifier, the Apple code-signing
 identity/Team ID (embedded in every shipped signed binary), and the updater's

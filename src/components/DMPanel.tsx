@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { askMind, fpTag, looksConsequential, mindTrace, primeMind, retrievalFactLine, tensionFingerprint } from '../lib/mindClient';
 import type { MindFacet } from '../lib/mindClient';
-import { buddyClient, type VibeMessage, type VibeUser } from '../lib/vibeClient';
+import { buddyClient, cleanHandle, newIdempotencyKey, sendOutcomeOf, sameAccountSpelling, type VibeMessage, type VibeUser } from '../lib/vibeClient';
 import { getCachedMessages, setCachedMessages } from '../lib/messageCache';
 import { realtime } from '../lib/realtime';
 import { color, space, radius, size } from '../lib/tokens';
@@ -109,6 +109,27 @@ export function renderBodyWithHandles(
   return onOpen ? parts.filter((p) => p !== '') : [body];
 }
 
+// Unresolved local attempts (failed, unknown, or still in flight), held for
+// the app run per account+conversation, so leaving a conversation and coming
+// back never loses the words or their Retry. Memory only: the message cache
+// deliberately refuses local attempts, and nothing here is authority.
+const unresolvedAttempts = new Map<string, VibeMessage[]>();
+const attemptsKey = (me: string, them: string) => `${me.toLowerCase()}\u0000${them.toLowerCase()}`;
+/** Test seam: forget every retained attempt. */
+export function clearUnresolvedAttempts() { unresolvedAttempts.clear(); }
+
+const bubbleActionStyle = {
+  background: 'transparent',
+  border: 'none',
+  color: '#6B8FFF',
+  fontSize: '9px',
+  fontFamily: 'inherit',
+  cursor: 'pointer',
+  marginLeft: '4px',
+  padding: 0,
+  textDecoration: 'underline',
+} as const;
+
 // A redemption lands its redeemer at /t/{thread_id} (#320) — so when such a
 // link appears inside a message body, the honest render is the THREAD it
 // names, not a jump to a browser. Extraction only; resolution happens on tap
@@ -188,8 +209,17 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       // not know which of your sessions the call is about, and the other
       // person's project is their work, not yours.
       rememberCall({ url: info.url, code: info.code, from: chatWith, thread: chatWith, account: handle });
-      const sent = await buddyClient.sendMessage(chatWith, body);
-      if (!sent) throw new Error('the invite could not be sent');
+      // Same send truth as the composer: the platform's spelling, a key, and
+      // three outcomes. 'unknown' is said as unknown, never as failed.
+      const to = chatWith.includes('-') ? await buddyClient.resolveRecipient(chatWith) : cleanHandle(chatWith);
+      const result = await buddyClient.sendMessageResult(to, body, undefined, { idempotencyKey: newIdempotencyKey() });
+      const outcome = sendOutcomeOf(result);
+      if (outcome === 'unknown') {
+        setInviteState('call started — the invite may not have reached them');
+        setTimeout(() => setInviteState(null), 8000);
+        return;
+      }
+      if (outcome !== 'stored') throw new Error('the invite could not be sent');
       realtime.recordStoredMessageWith(chatWith);
       setPollArmed(true);
       setInviteState('invite sent');
@@ -220,6 +250,9 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
   // so the discoverability line is not standing chrome.
   const [composerFocused, setComposerFocused] = useState(false);
   const [sending, setSending] = useState(false);
+  // One quiet line about the last send that the bubbles cannot say: a
+  // refused self-send, or a recipient addressed under the platform's spelling.
+  const [sendNote, setSendNote] = useState<string | null>(null);
   // The draft your coding agent prepared for THIS person in a terminal session,
   // if there is one. Shown verbatim; decided here; sent only by the terminal
   // package. Never a second sender (buddy#56 slice 2).
@@ -531,11 +564,36 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     if (hasServerThread) setPollArmed(true);
   }, [hasServerThread]);
 
+  // Restore this conversation's unresolved attempts on mount. One that was
+  // still in flight when the panel went away has no outcome we saw: unknown.
+  useEffect(() => {
+    const kept = unresolvedAttempts.get(attemptsKey(handle, chatWith)) || [];
+    if (!kept.length) return;
+    const restored = kept.map((m) => (m.status === 'pending' ? { ...m, status: 'unknown' as const } : m));
+    setMessages((prev) => [...prev, ...restored.filter((r) => !prev.some((p) => p.id === r.id))]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handle, chatWith]);
+  // ...and keep the retained set current as attempts resolve or are discarded.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    // Skip the very first render (empty state) so it cannot erase what the
+    // restore effect above is about to put back.
+    if (!restoredRef.current) { restoredRef.current = true; return; }
+    const open = messages.filter(
+      (m) => m.id.startsWith('local_') && !m.storedId &&
+        (m.status === 'failed' || m.status === 'unknown' || m.status === 'pending'),
+    );
+    const key = attemptsKey(handle, chatWith);
+    if (open.length) unresolvedAttempts.set(key, open);
+    else unresolvedAttempts.delete(key);
+  }, [messages, handle, chatWith]);
+
   useEffect(() => {
     // Load cached messages immediately
     const cached = getCachedMessages(handle, chatWith);
     if (cached.length > 0) {
-      setMessages(cached);
+      // Local attempts are never in the cache; keep them beside it.
+      setMessages((prev) => [...cached, ...prev.filter((m) => m.id.startsWith('local_'))]);
     }
     if (!pollArmed) {
       // Composer-first: nothing fetched, nothing created. But stay AWAKE:
@@ -556,18 +614,28 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
 
     const handleIncoming = (thread: VibeMessage[]) => {
       setMessages((prev) => {
-        const optimistic = prev.filter(
-          (m) => m.id.startsWith('local_') && m.status !== 'failed'
-        );
-        const confirmed = optimistic.filter((opt) =>
-          !thread.some(
+        // LOCAL ATTEMPTS SURVIVE THE MERGE. A refused ('failed') attempt is
+        // never in the served thread, so it stays — with its words and its
+        // Retry — until the person retries or discards it. Dropping it here
+        // used to erase the words seconds after "Failed" appeared (the
+        // composer was already cleared). A pending or 'unknown' attempt
+        // stays until the served thread shows the same text from us: that
+        // is the only evidence that it was stored.
+        const local = prev.filter((m) => m.id.startsWith('local_'));
+        const near = (api: VibeMessage, at: string | undefined, windowMs: number) =>
+          !!at && Math.abs(new Date(api.timestamp).getTime() - new Date(at).getTime()) < windowMs;
+        const unresolved = local.filter((opt) => {
+          if (opt.status === 'failed') return true;
+          if (opt.storedId) return !thread.some((api) => api.id === opt.storedId);
+          const windowMs = opt.status === 'unknown' ? 120_000 : 30_000;
+          return !thread.some(
             (api) =>
               api.content === opt.content &&
               api.from === opt.from &&
-              Math.abs(new Date(api.timestamp).getTime() - new Date(opt.timestamp).getTime()) < 30000
-          )
-        );
-        const merged = [...thread, ...confirmed];
+              (near(api, opt.timestamp, windowMs) || near(api, opt.attemptAt, windowMs))
+          );
+        });
+        const merged = [...thread, ...unresolved];
         setCachedMessages(handle, chatWith, thread);
         return merged;
       });
@@ -737,12 +805,28 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     // without the link" recovery from invalid_reply_target) sends bare
     // regardless of any currently-composed target.
     const replyTarget = forceUnlinked ? null : replyingTo;
+    setSending(true);
+    setSendNote(null);
+    // RECIPIENT SPELLING, decided before anything is shown as sent: the
+    // platform's spelling for a handle written with '-' (a-b → a_b), or the
+    // handle as written when the lookup does not find the same account.
+    // No '-': no lookup and no await, so the send leaves in the same turn.
+    const sendTo = chatWith.includes('-') ? await buddyClient.resolveRecipient(chatWith) : cleanHandle(chatWith);
+    // Self-send check on the RESOLVED handle. The words stay in the composer.
+    if (sameAccountSpelling(sendTo, handle.trim().toLowerCase())) {
+      setSendNote(`@${sendTo} is you — nothing was sent`);
+      mindTrace('send_result', { class: 'refused' });
+      setSending(false);
+      return;
+    }
     const facetCrosses = Boolean(returnArmed && msg.includes(returnArmed));
     // A Return is bound to this exact send attempt, never to a later message.
     // Failed sends do not carry the arm forward into unrelated prose.
     setReturnArmed(null);
-    const optimisticId = `local_${Date.now()}`;
-    setSending(true);
+    // One key per optimistic message, minted here and reused by every retry
+    // of THIS message — the platform stores it at most once.
+    const idempotencyKey = newIdempotencyKey();
+    const optimisticId = `local_${idempotencyKey}`;
     setInput('');
     // The composed unit (text + chosen target) becomes the pending message;
     // the composer + chip clear together, exactly like an ordinary send.
@@ -755,21 +839,44 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       content: msg,
       timestamp: new Date().toISOString(),
       status: 'pending',
+      idempotencyKey,
+      sendTo,
+      ...(replyTarget ? { attemptReplyTo: replyTarget.id } : {}),
       // Deliberately NO replyTo on the optimistic bubble: the needle renders
       // only from the SERVER-served link on the next read, never from the
       // local choice (coordinator scope).
     };
     setMessages((prev) => [...prev, optimistic]);
+    // Keep the chosen target with the attempt from the start, so a Retry
+    // after a failed OR unknown outcome sends the identical request (same
+    // key + same message = a replay, never a conflict).
+    if (replyTarget) {
+      setFailReplyTargets((prev) => new Map(prev).set(optimisticId, replyTarget.id));
+    }
 
     const sendStarted = Date.now();
     mindTrace('send_attempted', { draft_bytes: new TextEncoder().encode(msg).length });
-    const result = await buddyClient.sendMessageResult(chatWith, msg, replyTarget?.id);
+    const result = await buddyClient.sendMessageResult(sendTo, msg, replyTarget?.id, { idempotencyKey });
+    const outcome = sendOutcomeOf(result);
     mindTrace('send_result', {
-      class: result.ok ? 'stored' : result.error ? 'refused' : 'transport',
+      // 'transport' is the trace allowlist's word for "no verdict reached".
+      class: outcome === 'stored' ? 'stored' : outcome === 'refused' ? 'refused' : 'transport',
       ms: Date.now() - sendStarted,
       ...(result.id ? { mid: result.id } : {}),
     });
-    if (result.ok) {
+    if (outcome === 'stored') {
+      // Stored: the bubble is no longer an open attempt. Reconciled with the
+      // served copy by id when the receipt carried one, by text otherwise.
+      setMessages((prev) => prev.map((m) => (m.id === optimisticId
+        ? { ...m, status: 'sent', ...(result.id ? { storedId: result.id } : {}) }
+        : m)));
+      setFailReplyTargets((prev) => {
+        if (!prev.has(optimisticId)) return prev;
+        const next = new Map(prev); next.delete(optimisticId); return next;
+      });
+      if (sendTo !== chatWith) {
+        setSendNote(`sent to @${sendTo} — the platform's spelling of @${chatWith}`);
+      }
       // READ-BACK (a LENGTH check, stated honestly — review P1): the
       // server's storedLength receipt is compared against the sent text; it
       // can catch truncation, never prove byte identity (metadata cannot
@@ -798,28 +905,33 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         setReturnAsk(true);
       }
     }
-    if (!result.ok) {
+    if (outcome !== 'stored') {
+      // 'failed' = the server refused before any write. 'unknown' = no
+      // verdict: it may have been stored, so it is never called Failed.
+      const status: VibeMessage['status'] = outcome === 'refused' ? 'failed' : 'unknown';
       setMessages((prev) =>
-        prev.map((m) => (m.id === optimisticId ? { ...m, status: 'failed' } : m))
+        prev.map((m) => (m.id === optimisticId ? { ...m, status } : m))
       );
-      if (result.error) {
+      if (outcome === 'refused' && result.error) {
         setFailReasons((prev) => new Map(prev).set(optimisticId, result.error!));
-      }
-      // Keep the chosen target with the failed message so Retry re-sends it.
-      if (replyTarget) {
-        setFailReplyTargets((prev) => new Map(prev).set(optimisticId, replyTarget.id));
       }
     }
     setSending(false);
   };
 
-  // Re-send a message that failed to leave the client. Flip it back to
-  // 'pending' for immediate feedback; on failure it returns to 'failed', on
-  // success the poll reconciles it against the real server copy (the merge
-  // drops local_ messages that aren't 'failed').
+  // Send the SAME attempt again: same key, same recipient spelling, same
+  // reply target, same text. After an unknown outcome this cannot store a
+  // second copy — the platform answers a replay with the row it already has.
+  // The bubble stays (as 'failed' or 'unknown') until the outcome is stored,
+  // and then the served thread replaces it.
   const retry = async (failed: VibeMessage) => {
+    if (failed.status === 'pending') return;
+    const idempotencyKey = failed.idempotencyKey || newIdempotencyKey();
+    const sendTo = failed.sendTo || (chatWith.includes('-') ? await buddyClient.resolveRecipient(chatWith) : cleanHandle(chatWith));
     setMessages((prev) =>
-      prev.map((m) => (m.id === failed.id ? { ...m, status: 'pending' } : m))
+      prev.map((m) => (m.id === failed.id
+        ? { ...m, status: 'pending', idempotencyKey, sendTo, attemptAt: new Date().toISOString() }
+        : m))
     );
     setFailReasons((prev) => {
       if (!prev.has(failed.id)) return prev;
@@ -829,8 +941,12 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     });
     // Re-send with the reply target the failed message carried, so a Retry
     // preserves the human's chosen parent (never silently dropping it).
-    const result = await buddyClient.sendMessageResult(chatWith, failed.content, failReplyTargets.get(failed.id));
-    if (result.ok) {
+    const result = await buddyClient.sendMessageResult(sendTo, failed.content, failReplyTargets.get(failed.id) ?? failed.attemptReplyTo, { idempotencyKey });
+    const outcome = sendOutcomeOf(result);
+    if (outcome === 'stored') {
+      setMessages((prev) => prev.map((m) => (m.id === failed.id
+        ? { ...m, status: 'sent', ...(result.id ? { storedId: result.id } : {}) }
+        : m)));
       realtime.recordStoredMessageWith(chatWith);
       setPollArmed(true);
       setFailReplyTargets((prev) => {
@@ -839,14 +955,14 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
         next.delete(failed.id);
         return next;
       });
+      return;
     }
-    if (!result.ok) {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === failed.id ? { ...m, status: 'failed' } : m))
-      );
-      if (result.error) {
-        setFailReasons((prev) => new Map(prev).set(failed.id, result.error!));
-      }
+    const status: VibeMessage['status'] = outcome === 'refused' ? 'failed' : 'unknown';
+    setMessages((prev) =>
+      prev.map((m) => (m.id === failed.id ? { ...m, status } : m))
+    );
+    if (outcome === 'refused' && result.error) {
+      setFailReasons((prev) => new Map(prev).set(failed.id, result.error!));
     }
   };
 
@@ -1209,7 +1325,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                   borderRadius: isMe ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
                   fontSize: '13px',
                   lineHeight: '1.4',
-                  opacity: msg.status === 'failed' ? 0.5 : 1,
+                  opacity: msg.status === 'failed' || msg.status === 'unknown' ? 0.5 : 1,
                   // STRUCTURE FIDELITY (joint critique on buddy#49): between
                   // builders and agents the payload IS structure — numbered
                   // lists, blank-line separations, indented commands. Default
@@ -1371,6 +1487,28 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
                       }}
                     >
                       Retry
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => dropFailed(msg.id)}
+                      style={bubbleActionStyle}
+                    >
+                      Discard
+                    </button>
+                  </>
+                )}
+                {/* UNKNOWN is its own state: no verdict came back, so it may
+                    have been stored. Never "Failed". Try again sends the same
+                    key, so it cannot deliver a second copy. Dismiss only
+                    hides this local bubble — it cannot unsend anything. */}
+                {msg.status === 'unknown' && (
+                  <>
+                    <span style={{ color: color.faint, marginLeft: '4px' }}>May not have reached them</span>
+                    <button type="button" onClick={() => retry(msg)} style={bubbleActionStyle}>
+                      Try again
+                    </button>
+                    <button type="button" onClick={() => dropFailed(msg.id)} style={bubbleActionStyle}>
+                      Dismiss
                     </button>
                   </>
                 )}
@@ -1590,6 +1728,11 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
             its outcome line, or the unavailable line — lives in ONE bounded,
             scrolling region (codex r7/r9), so at 300×400 the ordinary composer
             below is never pushed out of the window by any combination of them. */}
+        {sendNote && (
+          <div data-testid="send-note" style={{ color: color.faint, fontSize: '10px', marginBottom: 6 }}>
+            {sendNote}
+          </div>
+        )}
         {(terminalDraft || draftOutcome || (!terminalDraft && draftUnavailable)) && (
         <div data-testid="terminal-draft-region" style={{ maxHeight: '40vh', overflowY: 'auto', marginBottom: 8 }}>
         {terminalDraft && (

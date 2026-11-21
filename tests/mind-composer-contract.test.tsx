@@ -42,7 +42,7 @@ vi.mock('../src/lib/mindClient', async (importOriginal) => {
   };
 });
 
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { buddyClient, type VibeMessage } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
@@ -80,6 +80,7 @@ let pendingAsks: Array<{
 let incoming: ((messages: VibeMessage[]) => void) | null = null;
 
 beforeEach(() => {
+  clearUnresolvedAttempts();
   vi.useFakeTimers();
   sent = [];
   pendingAsks = [];
