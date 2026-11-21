@@ -44,7 +44,7 @@ vi.mock('../src/lib/realtime', () => ({
 }));
 
 import UnifiedBuddyList from '../src/components/UnifiedBuddyList';
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { FIXTURES, ME } from '../src/dev/fixtures';
 import {
   FIRST_RECOGNITION,
@@ -83,7 +83,7 @@ function mountFixture(name: keyof typeof FIXTURES) {
   );
 }
 
-beforeEach(() => cleanup());
+beforeEach(() => { cleanup(); clearUnresolvedAttempts(); });
 
 describe('MY SESSIONS honesty states, on screen', () => {
   it('a fresh solo session renders its row and the recognition line', () => {

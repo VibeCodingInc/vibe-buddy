@@ -14,10 +14,11 @@ mod notify;
 mod mind;
 mod work;
 mod drafts;
+mod reach;
 
 use auth::{AuthResult, AuthStatus};
 use context_extractor::CodingDNA;
-use mcp_setup::{McpInstallResult, McpStatus};
+use mcp_setup::McpStatus;
 use std::time::Duration;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
@@ -127,13 +128,9 @@ fn start_login() -> Result<String, String> {
                 };
                 let Some(handle) = handle else { return };
                 let _ = auth::save_auth(&data.token, &handle);
-                // Best-effort MCP auto-install after auth
-                let result = mcp_setup::install_mcp();
-                if result.success {
-                    eprintln!("[Auth] MCP auto-installed for @{}", handle);
-                } else {
-                    eprintln!("[Auth] MCP auto-install skipped: {}", result.message);
-                }
+                // No agent configuration is written here any more: Claude Code
+                // is set up by `npx slashvibe-mcp setup`, which Buddy shows
+                // when check_mcp_status finds it missing (mcp_setup.rs).
             }
             AuthResult::Error(e) => {
                 eprintln!("[Auth] Login error: {}", e);
@@ -170,15 +167,11 @@ async fn check_mcp_status() -> McpStatus {
         .await
         .unwrap_or_else(|_| McpStatus {
             installed: false,
+            server: false,
+            hooks: false,
             npx_available: false,
             config_path: None,
-            hosts: Vec::new(),
         })
-}
-
-#[tauri::command]
-fn install_mcp() -> McpInstallResult {
-    mcp_setup::install_mcp()
 }
 
 /// The LaunchAgent label and plist the autostart plugin writes.
@@ -329,28 +322,82 @@ fn set_autostart(enabled: bool) -> bool {
 ///   3 unread → "3"      (unread always wins; it's the thing you act on)
 ///   5 online → "·5"     (a dot, so it reads as ambient rather than urgent)
 ///   nobody   → ""       (empty: no clutter when there's nothing to say)
+///   unread unknown → "?" (the read behind it is stale: not the last value)
 #[tauri::command]
-fn set_tray_status(app: tauri::AppHandle, online: u32, unread: u32) {
-    let title = if unread > 0 {
-        unread.to_string()
-    } else if online > 0 {
-        format!("·{}", online)
-    } else {
-        String::new()
-    };
+fn set_tray_status(app: tauri::AppHandle, online: Option<u32>, unread: Option<u32>, signed_out: Option<bool>) {
+    let (title, tooltip) = tray_text(online, unread, signed_out.unwrap_or(false));
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_title(Some(&title));
-        let tooltip = match (online, unread) {
-            (_, u) if u > 0 => format!("/vibe — {} unread, {} online", u, online),
-            (o, _) if o > 0 => format!("/vibe — {} online", o),
-            _ => "/vibe — nobody around".to_string(),
-        };
         let _ = tray.set_tooltip(Some(&tooltip));
     }
 }
 
+/// The menu-bar title and tooltip. A count is `None` when the read behind it
+/// is stale or never succeeded (src/lib/trayStatus.ts): that renders as
+/// unknown — never as the last value, and never as zero ("nobody around").
+fn tray_text(online: Option<u32>, unread: Option<u32>, signed_out: bool) -> (String, String) {
+    if signed_out {
+        return (String::new(), "/vibe — signed out".to_string());
+    }
+    let title = match (unread, online) {
+        (None, _) => "?".to_string(),
+        (Some(u), _) if u > 0 => u.to_string(),
+        (Some(_), Some(o)) if o > 0 => format!("·{}", o),
+        _ => String::new(),
+    };
+    let unread_part = match unread {
+        None => "unread unknown".to_string(),
+        Some(u) => format!("{} unread", u),
+    };
+    let tooltip = match (unread, online) {
+        (None, None) => "/vibe — can't see /vibe right now".to_string(),
+        (_, None) => format!("/vibe — {}, online unknown", unread_part),
+        (None, Some(o)) => format!("/vibe — {}, {} online", unread_part, o),
+        (Some(u), Some(o)) if u > 0 => format!("/vibe — {} unread, {} online", u, o),
+        (Some(_), Some(o)) if o > 0 => format!("/vibe — {} online", o),
+        (Some(_), Some(_)) => "/vibe — nobody around".to_string(),
+    };
+    (title, tooltip)
+}
+
+#[cfg(test)]
+mod tray_text_tests {
+    use super::tray_text;
+
+    #[test]
+    fn fresh_counts_render_as_before() {
+        assert_eq!(tray_text(Some(0), Some(3), false), ("3".to_string(), "/vibe — 3 unread, 0 online".to_string()));
+        assert_eq!(tray_text(Some(2), Some(0), false), ("·2".to_string(), "/vibe — 2 online".to_string()));
+        assert_eq!(tray_text(Some(0), Some(0), false), (String::new(), "/vibe — nobody around".to_string()));
+    }
+
+    #[test]
+    fn unknown_is_never_zero_and_never_the_last_value() {
+        assert_eq!(tray_text(None, None, false), ("?".to_string(), "/vibe — can't see /vibe right now".to_string()));
+        assert_eq!(tray_text(None, Some(0), false), (String::new(), "/vibe — 0 unread, online unknown".to_string()));
+        assert_eq!(tray_text(Some(4), None, false), ("?".to_string(), "/vibe — unread unknown, 4 online".to_string()));
+        for (o, u) in [(None, None), (None, Some(0)), (Some(0), None)] {
+            assert!(!tray_text(o, u, false).1.contains("nobody around"));
+        }
+    }
+
+    #[test]
+    fn signed_out_claims_nothing() {
+        assert_eq!(tray_text(None, None, true), (String::new(), "/vibe — signed out".to_string()));
+    }
+}
+
 #[tauri::command]
-fn set_dock_badge(count: u32) {
+fn set_dock_badge(count: u32, unknown: Option<bool>) {
+    // `unknown`: the count's thread read is stale — say "?", not the last count
+    // and not an empty badge (which reads as "nothing unread").
+    let label: Option<String> = if unknown.unwrap_or(false) {
+        Some("?".to_string())
+    } else if count > 0 {
+        Some(count.to_string())
+    } else {
+        None
+    };
     #[cfg(target_os = "macos")]
     {
         use cocoa::appkit::NSApp;
@@ -360,16 +407,19 @@ fn set_dock_badge(count: u32) {
         unsafe {
             let app = NSApp();
             let dock_tile: cocoa::base::id = msg_send![app, dockTile];
-            if count > 0 {
-                let label = NSString::alloc(nil).init_str(&count.to_string());
-                let _: () = msg_send![dock_tile, setBadgeLabel: label];
-            } else {
-                let _: () = msg_send![dock_tile, setBadgeLabel: nil];
+            match &label {
+                Some(text) => {
+                    let ns = NSString::alloc(nil).init_str(text);
+                    let _: () = msg_send![dock_tile, setBadgeLabel: ns];
+                }
+                None => {
+                    let _: () = msg_send![dock_tile, setBadgeLabel: nil];
+                }
             }
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = count;
+    let _ = label;
 }
 
 /// Stable id so set_tray_status can find the tray after setup.
@@ -604,7 +654,6 @@ fn main() {
             get_autostart,
             set_autostart,
             check_mcp_status,
-            install_mcp,
             vibeconf::vibeconf_available,
             vibeconf::vibeconf_seat_state,
             vibeconf::vibeconf_start_call,
@@ -612,6 +661,7 @@ fn main() {
             terminal::front_terminal_session,
             terminal::place_in_terminal_session,
             work::read_return_bindings,
+            reach::read_reach_prefs,
             drafts::terminal_drafts,
             drafts::send_terminal_draft,
             drafts::discard_terminal_draft,

@@ -1933,7 +1933,11 @@ describe('"presence never landed" is never claimed after presence has landed', (
     // using the platform's own `active` status (matching the Online section;
     // Buddy must not redefine presence locally — AGENTS.md).
     expect(src).not.toMatch(/presenceData\.error\s*\?\s*0/);
-    expect(src).toMatch(/presenceData\.error \? usersRef\.current : presenceData\.users/);
+    // Since terminal-parity (2026-11-20): the retained roster is used only
+    // within the list's own staleness grace; past it the count is UNKNOWN,
+    // not the last value (trayStatus.ts, tested in terminal-parity.test.ts).
+    expect(src).toMatch(/retainedUsers: usersRef\.current/);
+    expect(src).toMatch(/users: presenceData\.error \? null : presenceData\.users/);
   });
 
   it('#3 · there is no ambient line to go stale (ruthless pass 2026-08-15)', () => {

@@ -29,7 +29,7 @@ const memStore = new Map<string, string>();
   key: (i: number) => [...memStore.keys()][i] ?? null,
   get length() { return memStore.size; },
 };
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { buddyClient, type VibeMessage } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
@@ -49,6 +49,7 @@ const msg = (id: string, from: string, content: string): VibeMessage => ({
 // The component runs for real; only the wire is disconnected.
 let sent: Array<{ to: string; content: string }> = [];
 beforeEach(() => {
+  clearUnresolvedAttempts();
   sent = [];
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
@@ -199,7 +200,9 @@ describe('nothing else moved', () => {
     // Driven through the real send path (the cache deliberately refuses to
     // seed failed/optimistic messages): the wire refuses once, the bubble
     // must say the word and offer the action.
-    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ ok: false }));
+    // A definite refusal (a 4xx with a code). An answer-less { ok: false } is
+    // now 'unknown' and renders as such — see send-truth.test.tsx.
+    (buddyClient.sendMessageResult as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ ok: false, outcome: 'refused', error: 'nope' }));
     mount([]);
     const box = composer();
     fireEvent.change(box, { target: { value: 'did this land?' } });

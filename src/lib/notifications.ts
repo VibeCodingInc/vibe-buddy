@@ -9,6 +9,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { reachSuppressesBanner } from './reach';
 
 let permissionGranted = false;
 let permissionKnown = false;
@@ -192,6 +193,10 @@ export function resetNativeNotificationState(): void {
  * would let a re-poll race the baseline update.
  */
 function deliver(n: BuddyBanner): void {
+  // The terminal's quiet / mute (reach.json) hold every banner about a
+  // person here, at the one place all banners pass — enriched answers,
+  // ordinary DMs and arrivals alike. Session alerts are unaffected.
+  if (reachSuppressesBanner(n)) return;
   const stamped = { ...n, owner: bannerOwner ?? undefined };
   if (nativeAvailable === true) {
     // No plugin fallback here: on macOS the plugin path would install its own
@@ -630,15 +635,30 @@ export async function initNotificationClicks(
   }
 }
 
+// The Dock badge follows the same evidence rule as the tray: while the
+// thread read behind the count is stale, the badge says "?" — never the last
+// count, never nothing (which would read as "no unread").
+let lastBadgeCount = 0;
+let unreadEvidenceFresh = true;
 function updateDockBadge(count: number): void {
+  lastBadgeCount = count;
   try {
-    invoke('set_dock_badge', { count });
+    invoke('set_dock_badge', { count, unknown: !unreadEvidenceFresh });
   } catch {}
+}
+
+/** App reports whether the unread count still has fresh evidence behind it. */
+export function setUnreadEvidence(fresh: boolean): void {
+  if (fresh === unreadEvidenceFresh) return;
+  unreadEvidenceFresh = fresh;
+  updateDockBadge(lastBadgeCount);
 }
 
 export function resetNotificationState(): void {
   lastUnreadCounts = {};
   initialized = false;
+  lastBadgeCount = 0;
+  unreadEvidenceFresh = true;
 }
 
 // ---------------------------------------------------------------------------

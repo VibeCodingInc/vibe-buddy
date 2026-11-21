@@ -11,7 +11,7 @@
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { announcementKind, ANNOUNCEMENT_SEAM_TRUSTED, type VibeMessage } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
@@ -33,6 +33,7 @@ const GENUINE_PAYLOAD = { kind: 'announcement', source: 'qa_canary', generated_b
 const ME = 'alice_demo';
 
 beforeEach(() => {
+  clearUnresolvedAttempts();
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});
   vi.spyOn(realtime, 'goBackground').mockImplementation(() => {});

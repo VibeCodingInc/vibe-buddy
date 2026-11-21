@@ -31,7 +31,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 
-import DMPanel from '../src/components/DMPanel';
+import DMPanel, { clearUnresolvedAttempts } from '../src/components/DMPanel';
 import { buddyClient } from '../src/lib/vibeClient';
 import { realtime } from '../src/lib/realtime';
 import { setCachedMessages } from '../src/lib/messageCache';
@@ -40,6 +40,7 @@ import { setNotificationOwner } from '../src/lib/notifications';
 const draft = { id: 'd1', to: 'linus', why: 'you named them', why_now: 'he asked you this morning', message: 'Which backoff curve did you land on? I kept the 3-try cap.', refs: [], reply_to: null, rev: 'abcd1234', created_at: Date.now() };
 
 beforeEach(() => {
+  clearUnresolvedAttempts();
   invoked.length = 0; drafts = []; memStore.clear(); discardResult = { cancelled: true, display: null }; listDelay = null; throwList = false;
   vi.spyOn(realtime, 'init').mockImplementation(() => {});
   vi.spyOn(realtime, 'openDM').mockImplementation(() => {});

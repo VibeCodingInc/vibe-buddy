@@ -1,14 +1,19 @@
 # gitleaks config for the public vibe-buddy source.
-# Extends the default ruleset. ONE allowlisted value: the fabricated JWT used
-# as INPUT to the redaction test (payload is a bare handle, signature is fake -
-# it proves the redactor strips JWT-shaped strings). The allowlist matches the
-# exact fabricated value, never a file: a real credential added to any file,
+# Extends the default ruleset. TWO allowlisted values, both fabricated. The
+# first is the JWT used as INPUT to the redaction test (payload is a bare
+# handle, signature is fake - it proves the redactor strips JWT-shaped
+# strings); the second is described beside it below. The allowlist matches
+# each exact fabricated value, never a file: a real credential added to any file,
 # including the test, is still caught.
 [extend]
 useDefault = true
 
 [allowlist]
-description = "The exact fabricated redaction-test JWT (see SECRET-SCAN.md)"
+description = "Exact fabricated test tokens (see SECRET-SCAN.md)"
 regexes = [
   '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiJjb2x0cmFuZSJ9\.abcdEFGH1234_\-signaturehere''',
+  # The made-up session token in tests/send-truth-client.test.ts: its whole
+  # payload is {"exp":9999999999}, with one-letter stand-ins for the header
+  # and the signature. It only has to look unexpired to the client.
+  '''x\.eyJleHAiOjk5OTk5OTk5OTl9\.y''',
 ]
