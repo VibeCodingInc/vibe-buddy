@@ -439,6 +439,32 @@ export function principalFromToken(token: string | null | undefined): string | n
 }
 
 /**
+ * The status of one served thread message, as the viewer should see it.
+ *
+ * The platform serves three different facts and they must not be mixed:
+ *  - `read`         — the VIEWER's own cursor: "I have read this". On my own
+ *                     sends it says nothing about the recipient.
+ *  - `read_by_them` — on MY sends only: the recipient's cursor is past it
+ *                     (null on messages to me).
+ *  - `status`       — on MY sends only: 'sent' | 'presented' | 'read'.
+ *
+ * A message from me is 'read' only with the recipient's evidence:
+ * read_by_them === true, or (read_by_them absent) status === 'read'. An
+ * explicit read_by_them === false wins over anything else. 'presented' is a
+ * client presentation, not delivery, so it stays 'sent'. A route that serves
+ * neither field (a legacy shape) shows 'sent', never 'read'.
+ * A message to me keeps the viewer's own cursor (`read`).
+ */
+export function servedMessageStatus(m: any, viewer: string | null | undefined): 'sent' | 'read' {
+  const me = cleanHandle(viewer);
+  const fromMe = !!me && cleanHandle(m?.from) === me;
+  if (!fromMe) return m?.read === true ? 'read' : 'sent';
+  if (m?.read_by_them === true) return 'read';
+  if (m?.read_by_them === false) return 'sent';
+  return m?.status === 'read' ? 'read' : 'sent';
+}
+
+/**
  * THE served-thread decoder — production and tests share it. GET
  * /api/v2/threads/:id serves { thread_id, with, messages }; `with` is the
  * OTHER participant, computed server-side for the authed handle.
@@ -1258,7 +1284,7 @@ class BuddyClient {
     }
   }
 
-  async sendMessage(to: string, content: string, replyTo?: string, opts?: { idempotencyKey?: string }): Promise<boolean> {
+  async sendMessage(to: string, content: string, replyTo?: string, opts?: { idempotencyKey?: string; resolved?: boolean }): Promise<boolean> {
     return (await this.sendMessageResult(to, content, replyTo, opts)).ok;
   }
 
@@ -1318,10 +1344,20 @@ class BuddyClient {
     to: string,
     content: string,
     replyTo?: string,
-    opts?: { idempotencyKey?: string }
+    opts?: { idempotencyKey?: string; resolved?: boolean }
   ): Promise<SendResult> {
     // Not signed in: nothing left the machine.
     if (!this.handle) return { ok: false, outcome: 'refused', error: 'not_signed_in' };
+
+    // RECIPIENT SPELLING, for every caller (a notification-banner reply
+    // included): cleaned always; a handle with '-' takes the platform's own
+    // spelling when the identity lookup finds the same account under '_'.
+    // A caller that already resolved — and pinned that spelling so a Retry
+    // addresses the same row — says so with `resolved`, and is not asked
+    // again. resolveRecipient never throws; a lookup failure keeps the form.
+    if (!opts?.resolved) {
+      try { to = await this.resolveRecipient(to); } catch { to = cleanHandle(to); }
+    }
 
     // One key per attempt-identity. POST /api/messages hands the same request
     // to /api/v2/messages, which honours the Idempotency-Key header: a replay
@@ -1597,7 +1633,9 @@ class BuddyClient {
         to: m.to,
         content: m.body || m.text,
         timestamp: m.created_at || m.createdAt,
-        status: m.read ? 'read' : 'sent',
+        // Whose read: the RECIPIENT's for my sends, mine for theirs. `m.read`
+        // is the viewer's own cursor and never proves the recipient read it.
+        status: servedMessageStatus(m, startedAs.handle),
         // Served kind, validated at the client edge (platform#272 stores
         // it inside `payload`, with provenance): see announcementKind.
         kind: announcementKind(m.payload),

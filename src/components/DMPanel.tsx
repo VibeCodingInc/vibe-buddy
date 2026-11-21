@@ -212,7 +212,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
       // Same send truth as the composer: the platform's spelling, a key, and
       // three outcomes. 'unknown' is said as unknown, never as failed.
       const to = chatWith.includes('-') ? await buddyClient.resolveRecipient(chatWith) : cleanHandle(chatWith);
-      const result = await buddyClient.sendMessageResult(to, body, undefined, { idempotencyKey: newIdempotencyKey() });
+      const result = await buddyClient.sendMessageResult(to, body, undefined, { idempotencyKey: newIdempotencyKey(), resolved: true });
       const outcome = sendOutcomeOf(result);
       if (outcome === 'unknown') {
         setInviteState('call started — the invite may not have reached them');
@@ -856,7 +856,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
 
     const sendStarted = Date.now();
     mindTrace('send_attempted', { draft_bytes: new TextEncoder().encode(msg).length });
-    const result = await buddyClient.sendMessageResult(sendTo, msg, replyTarget?.id, { idempotencyKey });
+    const result = await buddyClient.sendMessageResult(sendTo, msg, replyTarget?.id, { idempotencyKey, resolved: true });
     const outcome = sendOutcomeOf(result);
     mindTrace('send_result', {
       // 'transport' is the trace allowlist's word for "no verdict reached".
@@ -941,7 +941,7 @@ export default function DMPanel({ handle, chatWith, onBack, users, onOpenThread,
     });
     // Re-send with the reply target the failed message carried, so a Retry
     // preserves the human's chosen parent (never silently dropping it).
-    const result = await buddyClient.sendMessageResult(sendTo, failed.content, failReplyTargets.get(failed.id) ?? failed.attemptReplyTo, { idempotencyKey });
+    const result = await buddyClient.sendMessageResult(sendTo, failed.content, failReplyTargets.get(failed.id) ?? failed.attemptReplyTo, { idempotencyKey, resolved: true });
     const outcome = sendOutcomeOf(result);
     if (outcome === 'stored') {
       setMessages((prev) => prev.map((m) => (m.id === failed.id

@@ -177,6 +177,68 @@ describe("recipient spelling: the platform's answer decides, nothing is folded b
   });
 });
 
+describe('the ONE send function resolves the recipient, for every caller', () => {
+  const postBody = (c: { init: any }) => JSON.parse(c.init.body);
+  const posts = () => calls.filter((c) => c.url === 'https://www.slashvibe.dev/api/messages');
+
+  it("a notification-banner reply to '@A-B ' is cleaned AND resolved to the platform's a_b", async () => {
+    const { client } = await signedIn();
+    script = [
+      { status: 200, body: json({ handle: 'a_b', kind: 'human' }) },
+      { status: 200, body: json({ success: true, message: { id: 'm9' } }) },
+    ];
+    // The banner path: UnifiedBuddyList hands (thread, text) to sendMessage.
+    expect(await client.sendMessage('@A-B ', 'from the banner')).toBe(true);
+    expect(calls[0].url).toBe('https://www.slashvibe.dev/api/identity/a-b');
+    expect(posts()).toHaveLength(1);
+    expect(postBody(posts()[0]).to).toBe('a_b');
+  });
+
+  it('no hyphen: cleaned, no lookup request', async () => {
+    const { client } = await signedIn();
+    script = [{ status: 200, body: json({ success: true, message: { id: 'm10' } }) }];
+    const r = await client.sendMessageResult(' @Bob_Demo', 'hi');
+    expect(r.outcome).toBe('stored');
+    expect(calls).toHaveLength(1);
+    expect(postBody(calls[0]).to).toBe('bob_demo');
+  });
+
+  it('resolved: true (the composer, which already resolved and pinned it) is not looked up again', async () => {
+    const { client } = await signedIn();
+    script = [{ status: 200, body: json({ success: true, message: { id: 'm11' } }) }];
+    await client.sendMessageResult('vibe-bot', 'hi', undefined, { idempotencyKey: 'buddy-pinned', resolved: true });
+    expect(calls).toHaveLength(1);
+    expect(postBody(calls[0]).to).toBe('vibe-bot');
+    expect(header(calls[0].init, 'Idempotency-Key')).toBe('buddy-pinned');
+  });
+
+  it('a lookup that cannot answer keeps the typed form, and the outcome and key are unchanged', async () => {
+    const { client } = await signedIn();
+    script = [
+      { status: 0, throws: true },                 // identity lookup offline
+      { status: 0, throws: true },                 // the send itself: unknown
+      { status: 200, body: json({ handle: 'a_b' }) }, // retry: the lookup answers now
+      { status: 200, body: json({ success: true, message: { id: 'm12' } }) },
+    ];
+    const first = await client.sendMessageResult('a-b', 'hello', undefined, { idempotencyKey: 'buddy-k9' });
+    expect(first.outcome).toBe('unknown');
+    expect(postBody(posts()[0]).to).toBe('a-b');
+    const again = await client.sendMessageResult('a-b', 'hello', undefined, { idempotencyKey: 'buddy-k9' });
+    expect(again).toMatchObject({ ok: true, outcome: 'stored', id: 'm12' });
+    expect(posts().map((c) => header(c.init, 'Idempotency-Key'))).toEqual(['buddy-k9', 'buddy-k9']);
+  });
+
+  it('a refusal is still a refusal after resolution', async () => {
+    const { client } = await signedIn();
+    script = [
+      { status: 404, body: json({ error: 'identity_not_found' }) },
+      { status: 404, body: json({ success: false, error: 'recipient_not_found' }) },
+    ];
+    const r = await client.sendMessageResult('no-one', 'hi');
+    expect(r).toMatchObject({ ok: false, outcome: 'refused', error: 'recipient_not_found' });
+  });
+});
+
 describe('deep links are cleaned like typed handles', () => {
   it('vibe://dm/ handles are trimmed, de-@-ed and lowercased; spelling untouched', async () => {
     const { routeDeepLink } = await import('../src/lib/deepLink');
